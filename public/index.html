@@ -83,6 +83,7 @@
   }
   #output .err { color: var(--err); }
   #output .info { color: var(--muted); }
+  #output div { min-height: 1.4em; }
 
   #messages { flex: 1; overflow: auto; padding: 4px 12px; display: flex; flex-direction: column; gap: 8px; }
   .msg .who { font-weight: 600; font-size: 13px; }
@@ -145,6 +146,402 @@
   </aside>
 </main>
 
+<script type="text/plain" id="prelude">
+-- Общая файловая система (файлы редактора), require/dofile/loadfile, io, os.
+os = os or {}
+local fs_read, fs_write, fs_list, fs_remove = __fs_read, __fs_write, __fs_list, __fs_remove
+local out, stdin, now, nick = __out, __stdin, __now, __nick
+
+-- require ищет модули среди общих файлов: require("utils") -> utils.lua
+package.searchers[2] = function(name)
+  local src = fs_read(name .. ".lua")
+  if not src then return "\n\tнет общего модуля '" .. name .. "'" end
+  local f, err = load(src, "=" .. name .. ".lua")
+  if not f then error(err, 0) end
+  return f, name .. ".lua"
+end
+package.searchers[3] = nil
+package.searchers[4] = nil
+
+function loadfile(name, mode, env)
+  local src = fs_read(name)
+  if not src then return nil, name .. ": No such file or directory" end
+  if env ~= nil then return load(src, "=" .. name, mode or "bt", env) end
+  return load(src, "=" .. name, mode or "bt")
+end
+
+function dofile(name)
+  local f, err = loadfile(name)
+  if not f then error(err, 0) end
+  return f()
+end
+
+-- ===================== io =====================
+local File = {}
+File.__index = File
+File.__name = "FILE*"
+File.__tostring = function(f)
+  return f.closed and "file (closed)" or ("file (" .. f.name .. ")")
+end
+
+local opened = {}
+
+local function newfile(kind, name, mode, buf)
+  local f = setmetatable({
+    kind = kind, name = name, mode = mode, buf = buf or "", pos = 1,
+    closed = false, dirty = false,
+    canread = mode:find("r", 1, true) ~= nil or mode:find("+", 1, true) ~= nil,
+    canwrite = mode:find("[wa+]") ~= nil,
+    append = mode:find("a", 1, true) ~= nil,
+  }, File)
+  if kind == "file" then opened[#opened + 1] = f end
+  return f
+end
+
+local function check(f)
+  if f.closed then error("attempt to use a closed file", 3) end
+end
+
+-- stdin: когда буфер пуст, спрашиваем у пользователя через окно ввода
+local function refill(f)
+  if f.kind ~= "stdin" then return false end
+  local s = stdin()
+  if s == nil then return false end
+  f.buf = f.buf:sub(f.pos) .. s .. "\n"
+  f.pos = 1
+  return true
+end
+
+local function read_one(f, fmt)
+  if type(fmt) == "number" then
+    if f.pos > #f.buf and not refill(f) then return nil end
+    if fmt == 0 then return "" end
+    local s = f.buf:sub(f.pos, f.pos + fmt - 1)
+    f.pos = f.pos + #s
+    return s
+  end
+  fmt = (tostring(fmt):gsub("^%*", ""))
+  local c = fmt:sub(1, 1)
+  if c == "a" then
+    if f.pos > #f.buf then refill(f) end
+    local s = f.buf:sub(f.pos)
+    f.pos = #f.buf + 1
+    return s
+  elseif c == "l" or c == "L" then
+    while true do
+      local e = f.buf:find("\n", f.pos, true)
+      if e then
+        local line = f.buf:sub(f.pos, c == "L" and e or e - 1)
+        f.pos = e + 1
+        return line
+      end
+      if not refill(f) then break end
+    end
+    if f.pos > #f.buf then return nil end
+    local s = f.buf:sub(f.pos)
+    f.pos = #f.buf + 1
+    return s
+  elseif c == "n" then
+    local s, e, num = f.buf:find("^%s*([+-]?%d*%.?%d+[eE][+-]?%d+)", f.pos)
+    if not s then s, e, num = f.buf:find("^%s*([+-]?%d*%.?%d+)", f.pos) end
+    if not s then return nil end
+    f.pos = e + 1
+    return tonumber(num)
+  end
+  error("bad argument #1 to 'read' (invalid format)", 3)
+end
+
+function File:read(...)
+  check(self)
+  if not self.canread then return nil, "Bad file descriptor", 9 end
+  local n = select("#", ...)
+  if n == 0 then return read_one(self, "l") end
+  local res = {}
+  for i = 1, n do
+    local v = read_one(self, (select(i, ...)))
+    res[i] = v
+    if v == nil then return table.unpack(res, 1, i) end
+  end
+  return table.unpack(res, 1, n)
+end
+
+function File:write(...)
+  check(self)
+  local is_std = self.kind == "stdout" or self.kind == "stderr"
+  if not is_std and not self.canwrite then return nil, "Bad file descriptor", 9 end
+  for i = 1, select("#", ...) do
+    local v = select(i, ...)
+    local t = type(v)
+    if t ~= "string" and t ~= "number" then
+      error("bad argument #" .. i .. " to 'write' (string expected, got " .. t .. ")", 2)
+    end
+    local s = tostring(v)
+    if is_std then
+      out(s, self.kind == "stderr")
+    else
+      if self.append then self.pos = #self.buf + 1 end
+      self.buf = self.buf:sub(1, self.pos - 1) .. s .. self.buf:sub(self.pos + #s)
+      self.pos = self.pos + #s
+      self.dirty = true
+    end
+  end
+  return self
+end
+
+function File:flush()
+  check(self)
+  if self.kind == "file" and self.dirty then
+    local ok, err = fs_write(self.name, self.buf)
+    if not ok then return nil, err end
+    self.dirty = false
+  end
+  return self
+end
+
+function File:close()
+  check(self)
+  local ok, err = self:flush()
+  if not ok then return nil, err end
+  self.closed = true
+  return true
+end
+
+function File:seek(whence, offset)
+  check(self)
+  whence = whence or "cur"
+  offset = offset or 0
+  local base
+  if whence == "set" then base = 0
+  elseif whence == "cur" then base = self.pos - 1
+  elseif whence == "end" then base = #self.buf
+  else error("bad argument #1 to 'seek' (invalid option '" .. tostring(whence) .. "')", 2) end
+  local np = base + offset
+  if np < 0 then return nil, "Invalid argument", 22 end
+  self.pos = np + 1
+  return np
+end
+
+function File:setvbuf() return true end
+
+function File:lines(...)
+  check(self)
+  local fmts = table.pack(...)
+  return function()
+    if self.closed then error("file is already closed", 2) end
+    return self:read(table.unpack(fmts, 1, fmts.n))
+  end
+end
+
+local stdin_f = newfile("stdin", "stdin", "r")
+local stdout_f = newfile("stdout", "stdout", "w")
+local stderr_f = newfile("stderr", "stderr", "w")
+local cur_in, cur_out = stdin_f, stdout_f
+
+local io_t = { stdin = stdin_f, stdout = stdout_f, stderr = stderr_f }
+
+function io_t.open(name, mode)
+  mode = mode or "r"
+  if type(name) ~= "string" then
+    error("bad argument #1 to 'open' (string expected, got " .. type(name) .. ")", 2)
+  end
+  if not mode:match("^[rwa]%+?b?$") then
+    error("bad argument #2 to 'open' (invalid mode)", 2)
+  end
+  local existing = fs_read(name)
+  local m = mode:sub(1, 1)
+  if m == "r" then
+    if existing == nil then return nil, name .. ": No such file or directory", 2 end
+    return newfile("file", name, mode, existing)
+  end
+  if m == "w" then
+    local ok, err = fs_write(name, "")
+    if not ok then return nil, name .. ": " .. err, 13 end
+    return newfile("file", name, mode, "")
+  end
+  if existing == nil then
+    local ok, err = fs_write(name, "")
+    if not ok then return nil, name .. ": " .. err, 13 end
+  end
+  local f = newfile("file", name, mode, existing or "")
+  f.pos = #f.buf + 1
+  return f
+end
+
+function io_t.close(f) return (f or cur_out):close() end
+function io_t.write(...) return cur_out:write(...) end
+function io_t.read(...) return cur_in:read(...) end
+function io_t.flush() return cur_out:flush() end
+
+function io_t.type(x)
+  if getmetatable(x) == File then return x.closed and "closed file" or "file" end
+  return nil
+end
+
+function io_t.input(f)
+  if f == nil then return cur_in end
+  if type(f) == "string" then
+    local h, err = io_t.open(f, "r")
+    if not h then error(err, 2) end
+    cur_in = h
+  else
+    cur_in = f
+  end
+  return cur_in
+end
+
+function io_t.output(f)
+  if f == nil then return cur_out end
+  if type(f) == "string" then
+    local h, err = io_t.open(f, "w")
+    if not h then error(err, 2) end
+    cur_out = h
+  else
+    cur_out = f
+  end
+  return cur_out
+end
+
+function io_t.lines(name, ...)
+  if name == nil then return cur_in:lines(...) end
+  local h, err = io_t.open(name, "r")
+  if not h then error(err, 2) end
+  local fmts = table.pack(...)
+  return function()
+    if h.closed then return nil end
+    local r = table.pack(h:read(table.unpack(fmts, 1, fmts.n)))
+    if r[1] == nil then
+      h:close()
+      return nil
+    end
+    return table.unpack(r, 1, r.n)
+  end
+end
+
+function io_t.popen() return nil, "io.popen недоступен: в браузере нет системных процессов" end
+function io_t.tmpfile() return newfile("tmp", "tmp", "w+") end
+
+io = io_t
+package.loaded.io = io_t
+
+-- Если программа не закрыла файлы, сохраняем всё в конце запуска
+function __flush_all()
+  pcall(debug.sethook)
+  for _, f in ipairs(opened) do
+    if not f.closed and f.dirty then pcall(f.flush, f) end
+  end
+end
+
+-- ===================== os =====================
+function os.remove(name)
+  if fs_read(name) == nil then return nil, name .. ": No such file or directory", 2 end
+  local ok, err = fs_remove(name)
+  if not ok then return nil, name .. ": " .. err, 1 end
+  return true
+end
+
+function os.rename(a, b)
+  local src = fs_read(a)
+  if src == nil then return nil, a .. ": No such file or directory", 2 end
+  local ok, err = fs_write(b, src)
+  if not ok then return nil, b .. ": " .. err, 13 end
+  local ok2, err2 = fs_remove(a)
+  if not ok2 then return nil, a .. ": " .. err2, 1 end
+  return true
+end
+
+function os.tmpname()
+  return "tmp_" .. os.time() .. "_" .. math.random(10000, 99999) .. ".tmp"
+end
+
+local env = {
+  USER = nick(), LOGNAME = nick(), HOME = "/", PWD = "/",
+  LANG = "ru_RU.UTF-8", SHELL = "/bin/sh", PATH = "/bin",
+}
+function os.getenv(k) return env[k] end
+
+function os.exit()
+  error("\1EXIT\1", 0)
+end
+
+-- os.execute: настоящей оболочки в браузере нет, поэтому это мини-эмуляция
+-- нескольких команд над общими файлами: echo ls cat touch rm mv cp pwd whoami date true false exit
+function os.execute(cmd)
+  if cmd == nil then return false end
+  cmd = (tostring(cmd):gsub("&&", ";"))
+  local code = 0
+  for part in (cmd .. ";"):gmatch("([^;]*);") do
+    local name = part:match("^%s*(%S+)")
+    local rest = part:match("^%s*%S+%s*(.-)%s*$") or ""
+    code = 0
+    if name == nil or name == "true" or name == ":" then
+      -- ничего не делаем
+    elseif name == "false" then
+      code = 1
+    elseif name == "exit" then
+      code = tonumber(rest) or 0
+      break
+    elseif name == "echo" then
+      local q, inner = rest:match("^(['\"])(.*)%1$")
+      out((q and inner or rest) .. "\n")
+    elseif name == "pwd" then
+      out("/\n")
+    elseif name == "whoami" then
+      out(nick() .. "\n")
+    elseif name == "date" then
+      out(os.date() .. "\n")
+    elseif name == "ls" or name == "dir" then
+      for n in fs_list():gmatch("[^\n]+") do out(n .. "\n") end
+    elseif name == "cat" then
+      for f in rest:gmatch("%S+") do
+        local s = fs_read(f)
+        if s then out(s) else out("cat: " .. f .. ": No such file or directory\n", true); code = 1 end
+      end
+    elseif name == "touch" then
+      for f in rest:gmatch("%S+") do
+        if fs_read(f) == nil then
+          local ok, err = fs_write(f, "")
+          if not ok then out("touch: " .. f .. ": " .. err .. "\n", true); code = 1 end
+        end
+      end
+    elseif name == "rm" then
+      for f in rest:gmatch("%S+") do
+        local ok, err = os.remove(f)
+        if not ok then out("rm: " .. err .. "\n", true); code = 1 end
+      end
+    elseif name == "mv" or name == "cp" then
+      local a, b = rest:match("^(%S+)%s+(%S+)$")
+      if not a then
+        out(name .. ": нужно два имени файла\n", true)
+        code = 1
+      elseif name == "mv" then
+        local ok, err = os.rename(a, b)
+        if not ok then out("mv: " .. err .. "\n", true); code = 1 end
+      else
+        local s = fs_read(a)
+        if s == nil then
+          out("cp: " .. a .. ": No such file or directory\n", true)
+          code = 1
+        else
+          local ok, err = fs_write(b, s)
+          if not ok then out("cp: " .. err .. "\n", true); code = 1 end
+        end
+      end
+    else
+      out("sh: " .. name .. ": command not found\n", true)
+      code = 127
+    end
+  end
+  if code == 0 then return true, "exit", 0 end
+  return nil, "exit", code
+end
+
+-- Защита от вечных циклов: 3 секунды на запуск (время ожидания ввода не считается)
+local t0 = now()
+pcall(debug.sethook, function()
+  if now() - t0 > 3000 then error("превышен лимит времени (3 с)", 2) end
+end, "", 100000)
+</script>
+
 <script src="https://cdn.jsdelivr.net/npm/fengari-web@0.1.4/dist/fengari-web.js"></script>
 <script>
 (() => {
@@ -153,6 +550,7 @@
   const messagesEl = $('messages'), nickEl = $('nick');
 
   let files = {};
+  const has = (n) => Object.prototype.hasOwnProperty.call(files, n);
   let current = 'main.lua';
   let ws = null;
   let myNick = '';
@@ -186,7 +584,7 @@
     switch (m.type) {
       case 'init':
         files = m.files;
-        if (!(current in files)) current = 'main.lua';
+        if (!has(current)) current = 'main.lua';
         renderFiles();
         openFile(current, true);
         messagesEl.innerHTML = '';
@@ -246,9 +644,9 @@
     let name = prompt('Имя модуля (латиница, цифры, _ и -):', 'utils');
     if (!name) return;
     name = name.trim();
-    if (!name.endsWith('.lua')) name += '.lua';
-    if (!/^[a-zA-Z0-9_-]{1,32}\.lua$/.test(name)) { alert('Недопустимое имя файла'); return; }
-    if (name in files) { openFile(name); return; }
+    if (!/\.[a-zA-Z0-9]{1,8}$/.test(name)) name += '.lua';
+    if (!/^[a-zA-Z0-9_-]{1,32}\.[a-zA-Z0-9]{1,8}$/.test(name)) { alert('Недопустимое имя файла'); return; }
+    if (has(name)) { openFile(name); return; }
     send({ type: 'create', name });
     pendingOpen = name;
   });
@@ -273,7 +671,7 @@
   });
 
   function applyRemote(name, content, created) {
-    const isNew = !(name in files);
+    const isNew = !has(name);
     files[name] = content;
     if (isNew) renderFiles();
     if (created && pendingOpen === name) { pendingOpen = null; openFile(name); return; }
@@ -298,74 +696,144 @@
   }
 
   // ---------- запуск Lua (fengari, в твоём браузере) ----------
-  function print(text, cls) {
-    const line = document.createElement('div');
-    if (cls) line.className = cls;
-    line.textContent = text;
-    output.appendChild(line);
+  const NAME_RE = /^[a-zA-Z0-9_-]{1,32}\.[a-zA-Z0-9]{1,8}$/;
+  let lineEl = null;
+  let pausedMs = 0;
+
+  // вывод без автоматического перевода строки (нужен для io.write)
+  function out(text, cls) {
+    text = String(text);
+    if (text === '') return;
+    const parts = text.split('\n');
+    parts.forEach((part, i) => {
+      if (i > 0) lineEl = null;
+      if (part === '' && i > 0 && i === parts.length - 1) return;
+      if (!lineEl) {
+        lineEl = document.createElement('div');
+        if (cls) lineEl.className = cls;
+        output.appendChild(lineEl);
+      }
+      lineEl.textContent += part;
+    });
     output.scrollTop = output.scrollHeight;
   }
+  function printLine(text, cls) { lineEl = null; out(text + '\n', cls); }
 
-  const PRELUDE = `
-    table.insert(package.searchers, 2, function(name)
-      local src = __readfile(name)
-      if not src then return "\\n\\tнет общего модуля '" .. name .. "'" end
-      local f, err = load(src, "=" .. name .. ".lua")
-      if not f then error(err, 0) end
-      return f, name .. ".lua"
-    end)
-    local t0 = __now()
-    pcall(debug.sethook, function()
-      if __now() - t0 > 3000 then error("превышен лимит времени (3 с)", 2) end
-    end, "", 100000)
-  `;
+  // запись в общий файл из Lua (io.open / os.rename / os.execute ...)
+  function writeShared(name, content) {
+    if (!NAME_RE.test(name)) return 'недопустимое имя файла (латиница, цифры, _ и -, расширение до 8 символов)';
+    if (content.length > 100000) return 'файл слишком большой';
+    if (!has(name)) {
+      if (Object.keys(files).length >= 50) return 'слишком много файлов';
+      files[name] = content;
+      send({ type: 'create', name, content });
+      renderFiles();
+    } else if (files[name] !== content) {
+      files[name] = content;
+      send({ type: 'edit', name, content });
+    }
+    if (name === current && editor.value !== content) editor.value = content;
+    return null;
+  }
+
+  function removeShared(name) {
+    if (name === 'main.lua') return 'нельзя удалить main.lua';
+    if (!has(name)) return 'нет такого файла';
+    delete files[name];
+    send({ type: 'delete', name });
+    if (current === name) { current = 'main.lua'; openFile(current, true); }
+    renderFiles();
+    return null;
+  }
 
   function run() {
     const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
+    const js = (v) => to_jsstring(v, undefined, undefined, true);
     const name = current;
     const source = files[name] ?? '';
     send({ type: 'ran', nick: myNick, name });
-    print(`▶ ${name}`, 'info');
+    printLine('▶ ' + name, 'info');
+    pausedMs = 0;
 
     const L = lauxlib.luaL_newstate();
     lualib.luaL_openlibs(L);
 
-    lua.lua_pushcfunction(L, (L) => {
+    const def = (fname, fn) => {
+      lua.lua_pushcfunction(L, fn);
+      lua.lua_setglobal(L, to_luastring(fname));
+    };
+    const arg = (L, i) => js(lauxlib.luaL_checkstring(L, i));
+    const pushNilErr = (L, err) => {
+      lua.lua_pushnil(L);
+      lua.lua_pushstring(L, to_luastring(err));
+      return 2;
+    };
+
+    def('print', (L) => {
       const n = lua.lua_gettop(L), parts = [];
       for (let i = 1; i <= n; i++) {
-        parts.push(to_jsstring(lauxlib.luaL_tolstring(L, i)));
+        parts.push(js(lauxlib.luaL_tolstring(L, i)));
         lua.lua_pop(L, 1);
       }
-      print(parts.join('\t'));
+      out(parts.join('\t') + '\n');
       return 0;
     });
-    lua.lua_setglobal(L, to_luastring('print'));
-
-    lua.lua_pushcfunction(L, (L) => {
-      const mod = to_jsstring(lauxlib.luaL_checkstring(L, 1));
-      const src = files[mod + '.lua'];
-      if (src === undefined) lua.lua_pushnil(L);
-      else lua.lua_pushstring(L, to_luastring(src));
+    def('__out', (L) => {
+      out(arg(L, 1), lua.lua_toboolean(L, 2) ? 'err' : undefined);
+      return 0;
+    });
+    def('__fs_read', (L) => {
+      const n = arg(L, 1);
+      if (!has(n)) lua.lua_pushnil(L);
+      else lua.lua_pushstring(L, to_luastring(files[n]));
       return 1;
     });
-    lua.lua_setglobal(L, to_luastring('__readfile'));
-
-    lua.lua_pushcfunction(L, (L) => { lua.lua_pushnumber(L, Date.now()); return 1; });
-    lua.lua_setglobal(L, to_luastring('__now'));
+    def('__fs_write', (L) => {
+      const err = writeShared(arg(L, 1), arg(L, 2));
+      if (err) return pushNilErr(L, err);
+      lua.lua_pushboolean(L, 1);
+      return 1;
+    });
+    def('__fs_remove', (L) => {
+      const err = removeShared(arg(L, 1));
+      if (err) return pushNilErr(L, err);
+      lua.lua_pushboolean(L, 1);
+      return 1;
+    });
+    def('__fs_list', (L) => {
+      lua.lua_pushstring(L, to_luastring(Object.keys(files).sort().join('\n')));
+      return 1;
+    });
+    def('__stdin', (L) => {
+      const t = Date.now();
+      const r = window.prompt('Ввод для программы (io.read). «Отмена» — конец ввода:');
+      pausedMs += Date.now() - t;
+      if (r === null) lua.lua_pushnil(L);
+      else lua.lua_pushstring(L, to_luastring(r));
+      return 1;
+    });
+    def('__now', (L) => { lua.lua_pushnumber(L, Date.now() - pausedMs); return 1; });
+    def('__nick', (L) => { lua.lua_pushstring(L, to_luastring(myNick)); return 1; });
 
     const exec = (code, chunk) => {
       const buf = to_luastring(code);
       let status = lauxlib.luaL_loadbuffer(L, buf, buf.length, to_luastring('=' + chunk));
       if (status === lua.LUA_OK) status = lua.lua_pcall(L, 0, 0, 0);
       if (status !== lua.LUA_OK) {
-        print(to_jsstring(lua.lua_tostring(L, -1)) || 'неизвестная ошибка', 'err');
-        lua.lua_pop(L, 1);
+        const msg = js(lauxlib.luaL_tolstring(L, -1));
+        lua.lua_pop(L, 2);
+        if (!msg.startsWith('\u0001EXIT')) printLine(msg, 'err');
         return false;
       }
       return true;
     };
 
-    if (exec(PRELUDE, 'prelude') ) exec(source, name);
+    if (exec($('prelude').textContent, 'prelude')) exec(source, name);
+
+    // сохраняем файлы, которые программа не закрыла
+    lua.lua_getglobal(L, to_luastring('__flush_all'));
+    if (lua.lua_isfunction(L, -1)) lua.lua_pcall(L, 0, 0, 0);
+    else lua.lua_pop(L, 1);
   }
 
   $('run').addEventListener('click', run);

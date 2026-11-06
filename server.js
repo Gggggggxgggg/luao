@@ -13,7 +13,7 @@ const MAX_FILE_SIZE = 100_000; // символов
 const MAX_CHAT_HISTORY = 100;
 const MAX_MSG_LEN = 500;
 const MAX_NICK_LEN = 20;
-const FILE_NAME_RE = /^[a-zA-Z0-9_-]{1,32}\.lua$/;
+const FILE_NAME_RE = /^[a-zA-Z0-9_-]{1,32}\.[a-zA-Z0-9]{1,8}$/;
 
 const DEFAULT_MAIN = `-- Это общий файл: его видят и правят все посетители.
 -- Модули — тоже общие. Создай файл utils.lua и подключи его так:
@@ -116,7 +116,7 @@ wss.on('connection', (ws) => {
     switch (m.type) {
       case 'edit': {
         const name = String(m.name);
-        if (!(name in state.files)) return;
+        if (!(Object.hasOwn(state.files, name))) return;
         const content = cleanText(m.content, MAX_FILE_SIZE);
         state.files[name] = content;
         broadcast({ type: 'file', name, content }, ws);
@@ -125,9 +125,13 @@ wss.on('connection', (ws) => {
       }
       case 'create': {
         const name = String(m.name);
-        if (!FILE_NAME_RE.test(name) || name in state.files) return;
+        if (!FILE_NAME_RE.test(name) || Object.hasOwn(state.files, name)) return;
         if (Object.keys(state.files).length >= MAX_FILES) return;
-        const content = `local M = {}\n\nfunction M.hello(name)\n  return "Привет, " .. name .. "!"\nend\n\nreturn M\n`;
+        const template = `local M = {}\n\nfunction M.hello(name)\n  return "Привет, " .. name .. "!"\nend\n\nreturn M\n`;
+        const content =
+          typeof m.content === 'string'
+            ? cleanText(m.content, MAX_FILE_SIZE)
+            : name.endsWith('.lua') ? template : '';
         state.files[name] = content;
         broadcast({ type: 'file', name, content, created: true });
         scheduleSave();
@@ -135,7 +139,7 @@ wss.on('connection', (ws) => {
       }
       case 'delete': {
         const name = String(m.name);
-        if (name === 'main.lua' || !(name in state.files)) return;
+        if (name === 'main.lua' || !(Object.hasOwn(state.files, name))) return;
         delete state.files[name];
         broadcast({ type: 'delete', name });
         scheduleSave();
@@ -151,7 +155,7 @@ wss.on('connection', (ws) => {
       case 'ran': {
         const nick = cleanText(m.nick, MAX_NICK_LEN).trim() || 'Гость';
         const name = String(m.name);
-        if (!(name in state.files)) return;
+        if (!(Object.hasOwn(state.files, name))) return;
         pushChat({ system: true, text: `${nick} запустил ${name}`, ts: now });
         break;
       }
