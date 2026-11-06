@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Общий Lua</title>
+<style>
+  :root {
+    --bg: #15172b;
+    --panel: #1d2040;
+    --line: #2f3463;
+    --text: #e7e8f5;
+    --muted: #8a8fb8;
+    --moon: #f2d98d;
+    --moon-ink: #2a2306;
+    --err: #ff9a9a;
+    --ok: #9fd8b4;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--sans);
+    display: grid; grid-template-rows: auto 1fr; font-size: 15px;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .status { color: var(--muted); font-size: 13px; }
+  .status b { color: var(--text); font-weight: 600; }
+  .grow { flex: 1; }
+  label.nick { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  input, textarea, button { font: inherit; color: inherit; }
+  input[type=text] {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 10px; outline: none;
+  }
+  input[type=text]:focus, textarea:focus-visible { border-color: var(--moon); }
+  button {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible { outline: 2px solid var(--moon); outline-offset: 2px; }
+  button.run { background: var(--moon); color: var(--moon-ink); border-color: var(--moon); font-weight: 600; }
+
+  main {
+    display: grid; grid-template-columns: 200px minmax(0, 1fr) 300px; min-height: 0;
+  }
+  aside, section { min-height: 0; display: flex; flex-direction: column; }
+  .files { border-right: 1px solid var(--line); }
+  .chat { border-left: 1px solid var(--line); }
+  .pane-title {
+    padding: 10px 12px; color: var(--muted); font-size: 13px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  #fileList { list-style: none; margin: 0; padding: 0 6px; overflow: auto; flex: 1; }
+  #fileList li {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer; font-family: var(--mono); font-size: 13px;
+  }
+  #fileList li:hover { background: var(--panel); }
+  #fileList li.active { background: var(--panel); box-shadow: inset 2px 0 0 var(--moon); }
+  #fileList li .del { visibility: hidden; padding: 0 6px; border: 0; background: none; color: var(--muted); }
+  #fileList li:hover .del { visibility: visible; }
+  #fileList li .del:hover { color: var(--err); }
+
+  .editor-wrap { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .toolbar .cur { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  #editor {
+    width: 100%; height: 100%; resize: none; border: 0; outline: none; background: var(--bg);
+    padding: 14px 16px; font-family: var(--mono); font-size: 14px; line-height: 1.55; tab-size: 2;
+    white-space: pre; overflow: auto;
+  }
+  .out-wrap { border-top: 1px solid var(--line); height: 200px; display: flex; flex-direction: column; }
+  #output {
+    margin: 0; padding: 8px 14px; overflow: auto; flex: 1; font-family: var(--mono); font-size: 13px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  #output .err { color: var(--err); }
+  #output .info { color: var(--muted); }
+
+  #messages { flex: 1; overflow: auto; padding: 4px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg .who { font-weight: 600; font-size: 13px; }
+  .msg .when { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .msg .body { white-space: pre-wrap; word-break: break-word; }
+  .msg.system { color: var(--muted); font-size: 13px; font-style: italic; }
+  .msg.mine .who { color: var(--moon); }
+  .chat form { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  .chat form input { flex: 1; min-width: 0; }
+
+  @media (max-width: 900px) {
+    body { height: auto; min-height: 100%; }
+    main { grid-template-columns: 1fr; }
+    .files, .chat { border: 0; border-top: 1px solid var(--line); }
+    #fileList { max-height: 160px; }
+    #editor { min-height: 320px; }
+    #messages { max-height: 260px; }
+  }
+  @media (prefers-reduced-motion: no-preference) { button { transition: border-color .12s; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Общий Lua</h1>
+  <span class="status" id="status">подключаюсь…</span>
+  <span class="status">онлайн: <b id="online">0</b></span>
+  <span class="grow"></span>
+  <label class="nick">Ник
+    <input type="text" id="nick" maxlength="20" autocomplete="off">
+  </label>
+</header>
+
+<main>
+  <aside class="files">
+    <div class="pane-title">Файлы <button id="newFile" title="Создать модуль">+ Новый</button></div>
+    <ul id="fileList"></ul>
+  </aside>
+
+  <section class="editor-wrap">
+    <div class="toolbar">
+      <button class="run" id="run">Запустить</button>
+      <button id="clear">Очистить вывод</button>
+      <span class="cur" id="cur"></span>
+      <span class="grow"></span>
+      <span class="status">Ctrl+Enter — запуск</span>
+    </div>
+    <textarea id="editor" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Код Lua"></textarea>
+    <div class="out-wrap">
+      <div class="pane-title">Вывод (виден только тебе)</div>
+      <pre id="output"></pre>
+    </div>
+  </section>
+
+  <aside class="chat">
+    <div class="pane-title">Чат</div>
+    <div id="messages"></div>
+    <form id="chatForm">
+      <input type="text" id="chatInput" maxlength="500" placeholder="Сообщение" autocomplete="off">
+      <button>Отправить</button>
+    </form>
+  </aside>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/fengari-web@0.1.4/dist/fengari-web.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const editor = $('editor'), output = $('output'), fileList = $('fileList');
+  const messagesEl = $('messages'), nickEl = $('nick');
+
+  let files = {};
+  let current = 'main.lua';
+  let ws = null;
+  let myNick = '';
+
+  // ---------- ник ----------
+  nickEl.value = localStorage.getItem('nick') || 'Гость' + Math.floor(1000 + Math.random() * 9000);
+  myNick = nickEl.value;
+  nickEl.addEventListener('input', () => {
+    myNick = nickEl.value.trim() || 'Гость';
+    localStorage.setItem('nick', nickEl.value);
+  });
+
+  // ---------- сеть ----------
+  function send(obj) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => { $('status').textContent = 'подключено'; };
+    ws.onclose = () => {
+      $('status').textContent = 'нет связи, переподключаюсь…';
+      setTimeout(connect, 2000);
+    };
+    ws.onmessage = (e) => handle(JSON.parse(e.data));
+  }
+  setInterval(() => send({ type: 'ping' }), 25000);
+
+  function handle(m) {
+    switch (m.type) {
+      case 'init':
+        files = m.files;
+        if (!(current in files)) current = 'main.lua';
+        renderFiles();
+        openFile(current, true);
+        messagesEl.innerHTML = '';
+        m.chat.forEach(addMessage);
+        $('online').textContent = m.online;
+        break;
+      case 'online':
+        $('online').textContent = m.count;
+        break;
+      case 'file':
+        applyRemote(m.name, m.content, m.created);
+        break;
+      case 'delete':
+        delete files[m.name];
+        if (current === m.name) { current = 'main.lua'; openFile(current, true); }
+        renderFiles();
+        break;
+      case 'chat':
+        addMessage(m.msg);
+        break;
+    }
+  }
+
+  // ---------- файлы ----------
+  function renderFiles() {
+    fileList.innerHTML = '';
+    Object.keys(files).sort((a, b) => (a === 'main.lua' ? -1 : b === 'main.lua' ? 1 : a.localeCompare(b)))
+      .forEach((name) => {
+        const li = document.createElement('li');
+        li.className = name === current ? 'active' : '';
+        const span = document.createElement('span');
+        span.textContent = name;
+        li.appendChild(span);
+        if (name !== 'main.lua') {
+          const del = document.createElement('button');
+          del.className = 'del'; del.textContent = '×'; del.title = 'Удалить для всех';
+          del.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (confirm(`Удалить ${name} у всех?`)) send({ type: 'delete', name });
+          });
+          li.appendChild(del);
+        }
+        li.addEventListener('click', () => openFile(name));
+        fileList.appendChild(li);
+      });
+  }
+
+  function openFile(name, force) {
+    if (!force && name === current) return;
+    current = name;
+    editor.value = files[name] ?? '';
+    $('cur').textContent = name;
+    renderFiles();
+  }
+
+  $('newFile').addEventListener('click', () => {
+    let name = prompt('Имя модуля (латиница, цифры, _ и -):', 'utils');
+    if (!name) return;
+    name = name.trim();
+    if (!name.endsWith('.lua')) name += '.lua';
+    if (!/^[a-zA-Z0-9_-]{1,32}\.lua$/.test(name)) { alert('Недопустимое имя файла'); return; }
+    if (name in files) { openFile(name); return; }
+    send({ type: 'create', name });
+    pendingOpen = name;
+  });
+  let pendingOpen = null;
+
+  // ---------- совместное редактирование ----------
+  editor.addEventListener('input', () => {
+    files[current] = editor.value;
+    send({ type: 'edit', name: current, content: editor.value });
+  });
+
+  editor.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const s = editor.selectionStart, en = editor.selectionEnd;
+      editor.setRangeText('  ', s, en, 'end');
+      editor.dispatchEvent(new Event('input'));
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      run();
+    }
+  });
+
+  function applyRemote(name, content, created) {
+    const isNew = !(name in files);
+    files[name] = content;
+    if (isNew) renderFiles();
+    if (created && pendingOpen === name) { pendingOpen = null; openFile(name); return; }
+    if (name !== current) return;
+
+    const old = editor.value;
+    if (old === content) return;
+    const s = editor.selectionStart, e = editor.selectionEnd, top = editor.scrollTop, left = editor.scrollLeft;
+
+    // сдвигаем курсор относительно изменённого участка
+    const min = Math.min(old.length, content.length);
+    let p = 0;
+    while (p < min && old[p] === content[p]) p++;
+    let q = 0;
+    while (q < min - p && old[old.length - 1 - q] === content[content.length - 1 - q]) q++;
+    const delta = content.length - old.length;
+    const adj = (x) => (x <= p ? x : x >= old.length - q ? x + delta : p);
+
+    editor.value = content;
+    editor.setSelectionRange(adj(s), adj(e));
+    editor.scrollTop = top; editor.scrollLeft = left;
+  }
+
+  // ---------- запуск Lua (fengari, в твоём браузере) ----------
+  function print(text, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = text;
+    output.appendChild(line);
+    output.scrollTop = output.scrollHeight;
+  }
+
+  const PRELUDE = `
+    table.insert(package.searchers, 2, function(name)
+      local src = __readfile(name)
+      if not src then return "\\n\\tнет общего модуля '" .. name .. "'" end
+      local f, err = load(src, "=" .. name .. ".lua")
+      if not f then error(err, 0) end
+      return f, name .. ".lua"
+    end)
+    local t0 = __now()
+    pcall(debug.sethook, function()
+      if __now() - t0 > 3000 then error("превышен лимит времени (3 с)", 2) end
+    end, "", 100000)
+  `;
+
+  function run() {
+    const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
+    const name = current;
+    const source = files[name] ?? '';
+    send({ type: 'ran', nick: myNick, name });
+    print(`▶ ${name}`, 'info');
+
+    const L = lauxlib.luaL_newstate();
+    lualib.luaL_openlibs(L);
+
+    lua.lua_pushcfunction(L, (L) => {
+      const n = lua.lua_gettop(L), parts = [];
+      for (let i = 1; i <= n; i++) {
+        parts.push(to_jsstring(lauxlib.luaL_tolstring(L, i)));
+        lua.lua_pop(L, 1);
+      }
+      print(parts.join('\t'));
+      return 0;
+    });
+    lua.lua_setglobal(L, to_luastring('print'));
+
+    lua.lua_pushcfunction(L, (L) => {
+      const mod = to_jsstring(lauxlib.luaL_checkstring(L, 1));
+      const src = files[mod + '.lua'];
+      if (src === undefined) lua.lua_pushnil(L);
+      else lua.lua_pushstring(L, to_luastring(src));
+      return 1;
+    });
+    lua.lua_setglobal(L, to_luastring('__readfile'));
+
+    lua.lua_pushcfunction(L, (L) => { lua.lua_pushnumber(L, Date.now()); return 1; });
+    lua.lua_setglobal(L, to_luastring('__now'));
+
+    const exec = (code, chunk) => {
+      const buf = to_luastring(code);
+      let status = lauxlib.luaL_loadbuffer(L, buf, buf.length, to_luastring('=' + chunk));
+      if (status === lua.LUA_OK) status = lua.lua_pcall(L, 0, 0, 0);
+      if (status !== lua.LUA_OK) {
+        print(to_jsstring(lua.lua_tostring(L, -1)) || 'неизвестная ошибка', 'err');
+        lua.lua_pop(L, 1);
+        return false;
+      }
+      return true;
+    };
+
+    if (exec(PRELUDE, 'prelude') ) exec(source, name);
+  }
+
+  $('run').addEventListener('click', run);
+  $('clear').addEventListener('click', () => { output.textContent = ''; });
+
+  // ---------- чат ----------
+  function addMessage(m) {
+    const el = document.createElement('div');
+    el.className = 'msg' + (m.system ? ' system' : '') + (!m.system && m.nick === myNick ? ' mine' : '');
+    const time = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (m.system) {
+      el.textContent = `${m.text} · ${time}`;
+    } else {
+      const head = document.createElement('div');
+      const who = document.createElement('span'); who.className = 'who'; who.textContent = m.nick;
+      const when = document.createElement('span'); when.className = 'when'; when.textContent = time;
+      head.append(who, when);
+      const body = document.createElement('div'); body.className = 'body'; body.textContent = m.text;
+      el.append(head, body);
+    }
+    const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 40;
+    messagesEl.appendChild(el);
+    if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  $('chatForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = $('chatInput').value.trim();
+    if (!text) return;
+    send({ type: 'chat', nick: myNick, text });
+    $('chatInput').value = '';
+  });
+
+  connect();
+})();
+</script>
+</body>
+</html>
