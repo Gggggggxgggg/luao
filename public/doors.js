@@ -85,6 +85,15 @@
     #drOver { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; background: rgba(0,0,0,.78); text-align: center; padding: 20px; }
     #drOver h2 { margin: 0 0 8px; font-size: 30px; letter-spacing: 3px; }
     #drOver p { color: var(--muted); margin: 4px 0; }
+    #drChatBtn { position: absolute; top: 10px; right: 10px; z-index: 5; opacity: .85; }
+    #drFeed { position: absolute; right: 10px; top: 52px; width: min(300px, 70vw); font-size: 13px; text-align: right; pointer-events: none; color: #e8d9a8; text-shadow: 0 0 5px #000; }
+    #drFeed div { margin-bottom: 3px; }
+    #drChat { position: absolute; right: 10px; top: 52px; z-index: 5; width: min(330px, calc(100vw - 20px)); height: min(46vh, 320px); display: flex; flex-direction: column; background: rgba(0,0,0,.85); border: 1px solid var(--line); border-radius: 8px; }
+    #drChatList { flex: 1; overflow: auto; padding: 8px 10px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+    #drChatList .sys { color: var(--muted); font-style: italic; }
+    #drChatList b { color: var(--moon); }
+    #drChatForm { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+    #drChatForm input { flex: 1; min-width: 0; }
     #drTouch { display: none; }
     #drTouch button { position: absolute; z-index: 3; width: 58px; height: 58px; border-radius: 50%; font-size: 18px; opacity: .75; }
     @media (pointer: coarse) { #drTouch { display: block; } }
@@ -103,7 +112,7 @@
         <li>Запертая дверь требует <b>ключ</b> — он лежит в одном из ящиков комнаты. С комнаты №5 бывают тёмные комнаты — включай фонарик.</li>
         <li>Пока кто-то жив, забег продолжается; погибшие наблюдают за живыми. Когда погибли все — новый забег.</li>
       </ul>
-      <p><b>Управление:</b> WASD — ходить, Shift — бежать, мышь — смотреть (клик по экрану захватывает мышь), E — действие, F — фонарик, Esc — отпустить мышь.
+      <p><b>Управление:</b> WASD — ходить, Shift — бежать, мышь — смотреть (клик по экрану захватывает мышь), E — действие, F — фонарик, Esc — отпустить мышь, Enter или T — чат.
       На телефоне: левая половина экрана — джойстик, правая — обзор, кнопки справа.</p>
       <p id="drCountLand" class="muted">Загляни в забег…</p>
       <button class="run" id="drPlay">Играть</button>
@@ -119,6 +128,12 @@
         <div id="drPrompt"></div>
       </div>
       <button id="drExit">← Выйти</button>
+      <button id="drChatBtn" title="Чат (Enter или T)">💬</button>
+      <div id="drFeed"></div>
+      <div id="drChat" hidden>
+        <div id="drChatList"></div>
+        <form id="drChatForm"><input type="text" id="drChatInput" maxlength="500" placeholder="Сообщение" autocomplete="off"><button>→</button></form>
+      </div>
       <div id="drScreech" hidden></div>
       <div id="drOver" hidden></div>
       <div id="drTouch">
@@ -135,7 +150,7 @@
     alive: true, hp: 100, gold: 0, hasKey: false, killedBy: '',
     x: 0, z: -3, yaw: 0, pitch: 0, vx: 0, vz: 0, bob: 0, run: false,
     hidden: null, flash: false, ev: null, evSnd: null, screech: null, nextScreech: 0,
-    pending: false, lastSend: 0, lastHud: 0, count: 0, msgUntil: 0, deadY: 0,
+    chatOpen: false, unread: 0, pending: false, lastSend: 0, lastHud: 0, count: 0, msgUntil: 0, deadY: 0,
   };
   const keys = new Set();
   const touch = { x: 0, y: 0 };
@@ -684,6 +699,7 @@
       $('drGold').textContent = `🪙 ${S.gold}`;
       $('drKey').hidden = !S.hasKey;
       $('drCount').textContent = `игроков: ${S.peers.size + 1}`;
+      updateFeed();
       $('drHpBar').style.width = S.hp + '%';
       if (S.msgUntil && now > S.msgUntil) { $('drMsg').textContent = ''; S.msgUntil = 0; }
     }
@@ -736,7 +752,12 @@
   function onMessage(m) {
     switch (m.type) {
       case 'init':
+        chatMsgs.length = 0;
+        (m.chat || []).forEach((c) => addChat(c, false));
         if (S.on) Net.send({ type: 'd_join' }); // переподключение
+        break;
+      case 'chat':
+        addChat(m.msg, true);
         break;
       case 'd_count':
         S.count = m.n;
@@ -791,6 +812,7 @@
   function leave() {
     if (!S.on) return;
     S.on = false; S.ready = false;
+    closeChat();
     Net.send({ type: 'd_leave' });
     cancelAnimationFrame(rafId);
     if (document.pointerLockElement) document.exitPointerLock();
@@ -806,9 +828,63 @@
   $('drPlay').addEventListener('click', enter);
   $('drExit').addEventListener('click', () => { leave(); Net.send({ type: 'd_peek' }); });
 
+  // ---------- чат (тот же, что на сайте) ----------
+  const chatMsgs = [];
+  function addChat(m, fresh) {
+    chatMsgs.push({ ...m, _t: fresh ? Date.now() : 0 });
+    if (chatMsgs.length > 60) chatMsgs.shift();
+    if (fresh && !S.chatOpen && !m.system) S.unread++;
+    renderChat();
+  }
+  function chatLine(m) {
+    const d = document.createElement('div');
+    if (m.system) { d.className = 'sys'; d.textContent = m.text; return d; }
+    const b = document.createElement('b'); b.textContent = m.nick;
+    d.append(b, ' ' + m.text);
+    return d;
+  }
+  function renderChat() {
+    const list = $('drChatList');
+    list.replaceChildren(...chatMsgs.map(chatLine));
+    list.scrollTop = list.scrollHeight;
+    $('drChatBtn').textContent = '💬' + (S.unread ? ' ' + S.unread : '');
+  }
+  function updateFeed() { // последние сообщения поверх игры, пока чат закрыт
+    const now = Date.now();
+    const recent = S.chatOpen ? [] : chatMsgs.filter((m) => m._t && now - m._t < 8000 && !m.system).slice(-3);
+    $('drFeed').replaceChildren(...recent.map(chatLine));
+  }
+  function openChat() {
+    if (!S.on) return;
+    S.chatOpen = true; S.unread = 0;
+    keys.clear(); touch.x = touch.y = 0;
+    if (document.pointerLockElement) document.exitPointerLock();
+    $('drChat').hidden = false;
+    renderChat();
+    $('drChatInput').focus();
+  }
+  function closeChat() {
+    S.chatOpen = false;
+    $('drChat').hidden = true;
+    $('drChatInput').blur();
+  }
+  $('drChatBtn').addEventListener('click', () => (S.chatOpen ? closeChat() : openChat()));
+  $('drChatForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = $('drChatInput').value.trim();
+    if (!text) return;
+    Net.send({ type: 'chat', nick: Net.nick(), text });
+    $('drChatInput').value = '';
+  });
+
   // ---------- ввод ----------
   document.addEventListener('keydown', (e) => {
     if (!S.on) return;
+    if (e.target && e.target.tagName === 'INPUT') { // набираем сообщение
+      if (e.code === 'Escape') closeChat();
+      return;
+    }
+    if (e.code === 'Enter' || e.code === 'KeyT') { e.preventDefault(); openChat(); return; }
     if (e.code === 'KeyE' && !e.repeat) interact();
     else if (e.code === 'KeyF' && !e.repeat) { spot.intensity = spot.intensity > 0 ? 0 : 1.5; say(spot.intensity ? 'Фонарик включён' : 'Фонарик выключен', 1200); }
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight'].includes(e.code)) e.preventDefault();
