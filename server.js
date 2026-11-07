@@ -333,8 +333,159 @@ function handleGame(ws, m, now) {
       return true;
 
     default:
+      return handleDoors(ws, m);
+  }
+}
+
+// ---------- DOORS: общий кооперативный забег ----------
+const D_ROOM = 16; // глубина комнаты (одинаковая у всех, клиенты строят комнаты по seed)
+const D_GOAL = 100; // сколько дверей нужно открыть для победы
+const doors = { seed: 1, front: 0, players: new Set(), nextEvent: 0, over: false, evId: 0, timer: null };
+
+const freshD = () => ({ x: (Math.random() - 0.5) * 4, z: -(doors.front * D_ROOM) - 3, ry: 0, hid: false, alive: true });
+
+function doorsNewRun() {
+  doors.seed = crypto.randomInt(1, 2 ** 31 - 1);
+  doors.front = 0;
+  doors.over = false;
+  doors.nextEvent = Date.now() + 20000;
+  for (const p of doors.players) p.d = freshD();
+}
+
+function doorsCount() {
+  broadcast({ type: 'd_count', n: doors.players.size, front: doors.front });
+}
+
+function doorsStartMsg(p) {
+  return { type: 'd_start', seed: doors.seed, front: doors.front, goal: D_GOAL, now: Date.now(), spawn: { x: p.d.x, z: p.d.z } };
+}
+
+function doorsRestart() {
+  doors.timer = null;
+  if (!doors.players.size) return;
+  doorsNewRun();
+  for (const p of doors.players) sendTo(p, doorsStartMsg(p));
+  doorsCount();
+}
+
+function doorsEnd(type, extra) {
+  if (doors.over) return;
+  doors.over = true;
+  for (const p of doors.players) sendTo(p, { type, front: doors.front, ...extra });
+  doors.timer = setTimeout(doorsRestart, type === 'd_win' ? 12000 : 8000);
+}
+
+function doorsCheckAllDead() {
+  if (doors.over || !doors.players.size) return;
+  if ([...doors.players].every((p) => !p.d.alive)) doorsEnd('d_over');
+}
+
+function doorsLeave(ws) {
+  if (!doors.players.delete(ws)) return;
+  ws.d = null;
+  if (!doors.players.size) {
+    clearTimeout(doors.timer);
+    doors.timer = null;
+    doorsNewRun();
+  } else {
+    doorsCheckAllDead();
+  }
+  doorsCount();
+}
+
+function doorsSpawnEvent(now) {
+  const alive = [...doors.players].filter((p) => p.d.alive);
+  if (!alive.length) return;
+  const type = doors.front >= 4 && Math.random() < 0.4 ? 'ambush' : 'rush';
+  const ev = {
+    id: ++doors.evId,
+    type,
+    t0: now + 5000, // 5 секунд на предупреждение
+    z0: Math.max(...alive.map((p) => p.d.z)) + 30, // старт позади самого дальнего игрока
+    z1: -(doors.front + 2) * D_ROOM - 20, // финиш за закрытой дверью
+    speed: type === 'rush' ? 55 : 48,
+    passes: type === 'ambush' ? 2 + Math.floor(Math.random() * 3) : 1,
+    flick: type === 'rush' && doors.front < 90, // в последних комнатах Rush без мигания света
+  };
+  for (const p of doors.players) sendTo(p, { type: 'd_event', ev });
+}
+
+doorsNewRun();
+
+// позиции игроков друг другу — 10 раз в секунду
+setInterval(() => {
+  if (doors.players.size < 2) return;
+  const list = [...doors.players].map((p) => ({
+    id: p.id, nick: p.nick || 'Гость', x: p.d.x, z: p.d.z, ry: p.d.ry, hid: p.d.hid, alive: p.d.alive,
+  }));
+  for (const p of doors.players) sendTo(p, { type: 'd_peers', list: list.filter((q) => q.id !== p.id) });
+}, 100);
+
+// сущности появляются по таймеру, пока в забеге есть живые игроки
+setInterval(() => {
+  const now = Date.now();
+  if (!doors.players.size || doors.over || doors.front < 1 || now < doors.nextEvent) return;
+  doorsSpawnEvent(now);
+  const k = Math.max(0.4, 1 - doors.front / 150); // чем глубже, тем чаще
+  doors.nextEvent = now + (22000 + Math.random() * 26000) * k;
+}, 1000);
+
+function handleDoors(ws, m) {
+  const num = (v, a, b) => clamp(v, a, b);
+  switch (m.type) {
+    case 'd_peek':
+      sendTo(ws, { type: 'd_count', n: doors.players.size, front: doors.front });
+      return true;
+
+    case 'd_join': {
+      if (!doors.players.has(ws)) {
+        ws.d = freshD();
+        doors.players.add(ws);
+      }
+      sendTo(ws, { ...doorsStartMsg(ws), type: 'd_init', over: doors.over });
+      doorsCount();
+      return true;
+    }
+
+    case 'd_leave':
+      doorsLeave(ws);
+      return true;
+
+    case 'd_pos': {
+      const d = ws.d;
+      if (!d || !d.alive) return true;
+      d.x = num(m.x, -6, 6);
+      d.z = num(m.z, -(doors.front + 1) * D_ROOM - 1, 2);
+      d.ry = num(m.ry, -1000, 1000);
+      d.hid = !!m.hid;
+      return true;
+    }
+
+    case 'd_open': {
+      if (!ws.d || !ws.d.alive || doors.over) return true;
+      if (Math.floor(Number(m.room)) !== doors.front) return true;
+      doors.front++;
+      broadcastTo(doors.players, { type: 'd_front', front: doors.front });
+      doorsCount();
+      if (doors.front >= D_GOAL) doorsEnd('d_win');
+      return true;
+    }
+
+    case 'd_dead':
+      if (ws.d && ws.d.alive) {
+        ws.d.alive = false;
+        ws.d.hid = false;
+        doorsCheckAllDead();
+      }
+      return true;
+
+    default:
       return false;
   }
+}
+
+function broadcastTo(set, obj) {
+  for (const p of set) sendTo(p, obj);
 }
 
 if (!Object.keys(state.charts).length) state.charts.demo = demoChart();
@@ -567,6 +718,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    doorsLeave(ws);
     leaveMatch(ws);
     let changed = false;
     for (const [from, c] of challenges) {

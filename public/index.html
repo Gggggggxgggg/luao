@@ -60,7 +60,7 @@
   dialog .link { background: none; border: 0; color: var(--muted); padding: 10px 0 0; text-decoration: underline; cursor: pointer; }
   .tabs { display: flex; gap: 4px; }
   .tabs button.on { background: var(--moon); color: var(--moon-ink); border-color: var(--moon); font-weight: 600; }
-  #gameTab { min-height: 0; overflow: auto; }
+  #gameTab, #doorsTab { min-height: 0; overflow: auto; }
 
   main {
     display: grid; grid-template-columns: 200px minmax(0, 1fr) 300px; min-height: 0;
@@ -125,6 +125,7 @@
   <nav class="tabs">
     <button id="tabCode" class="on">Код</button>
     <button id="tabGame">Игра</button>
+    <button id="tabDoors">Doors</button>
   </nav>
   <span class="status" id="status">подключаюсь…</span>
   <span class="status">онлайн: <b id="online">0</b></span>
@@ -170,6 +171,7 @@
   </aside>
 </main>
 <div id="gameTab" hidden></div>
+<div id="doorsTab" hidden></div>
 
 <dialog id="authDlg">
   <form id="authForm">
@@ -623,6 +625,7 @@ end, "", 100000)
   function handle(m) {
     if (m.type === 'init' && localStorage.getItem('token')) send({ type: 'auth', token: localStorage.getItem('token') });
     if (window.Game) window.Game.onMessage(m);
+    if (window.Doors) window.Doors.onMessage(m);
     switch (m.type) {
       case 'init':
         files = m.files;
@@ -915,15 +918,17 @@ end, "", 100000)
 
   // ---------- вкладки и мост для игры ----------
   function showTab(name) {
-    const game = name === 'game';
-    $('codeTab').hidden = game;
-    $('gameTab').hidden = !game;
-    $('tabCode').classList.toggle('on', !game);
-    $('tabGame').classList.toggle('on', game);
-    if (!game && window.Game) window.Game.onHide();
+    $('codeTab').hidden = name !== 'code';
+    $('gameTab').hidden = name !== 'game';
+    $('doorsTab').hidden = name !== 'doors';
+    for (const t of ['Code', 'Game', 'Doors']) $('tab' + t).classList.toggle('on', name === t.toLowerCase());
+    if (name !== 'game' && window.Game) window.Game.onHide();
+    if (name !== 'doors' && window.Doors) window.Doors.onHide();
+    if (name === 'doors' && window.Doors) window.Doors.onShow();
   }
   $('tabCode').addEventListener('click', () => showTab('code'));
   $('tabGame').addEventListener('click', () => showTab('game'));
+  $('tabDoors').addEventListener('click', () => showTab('doors'));
   // ---------- аккаунт ----------
   let user = null;
   let authMode = 'login';
@@ -1008,5 +1013,6 @@ end, "", 100000)
 })();
 </script>
 <script src="game.js"></script>
+<script src="doors.js"></script>
 </body>
 </html>
