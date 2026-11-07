@@ -47,6 +47,11 @@
   button:focus-visible { outline: 2px solid var(--moon); outline-offset: 2px; }
   button.run { background: var(--moon); color: var(--moon-ink); border-color: var(--moon); font-weight: 600; }
 
+  [hidden] { display: none !important; }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button.on { background: var(--moon); color: var(--moon-ink); border-color: var(--moon); font-weight: 600; }
+  #gameTab { min-height: 0; overflow: auto; }
+
   main {
     display: grid; grid-template-columns: 200px minmax(0, 1fr) 300px; min-height: 0;
   }
@@ -107,6 +112,10 @@
 </head>
 <body>
 <header>
+  <nav class="tabs">
+    <button id="tabCode" class="on">Код</button>
+    <button id="tabGame">Игра</button>
+  </nav>
   <span class="status" id="status">подключаюсь…</span>
   <span class="status">онлайн: <b id="online">0</b></span>
   <span class="grow"></span>
@@ -115,7 +124,7 @@
   </label>
 </header>
 
-<main>
+<main id="codeTab">
   <aside class="files">
     <div class="pane-title">Файлы <button id="newFile" title="Создать модуль">+ Новый</button></div>
     <ul id="fileList"></ul>
@@ -145,6 +154,7 @@
     </form>
   </aside>
 </main>
+<div id="gameTab" hidden></div>
 
 <script type="text/plain" id="prelude">
 -- Общая файловая система (файлы редактора), require/dofile/loadfile, io, os.
@@ -581,6 +591,7 @@ end, "", 100000)
   setInterval(() => send({ type: 'ping' }), 25000);
 
   function handle(m) {
+    if (window.Game) window.Game.onMessage(m);
     switch (m.type) {
       case 'init':
         files = m.files;
@@ -867,8 +878,22 @@ end, "", 100000)
     $('chatInput').value = '';
   });
 
+  // ---------- вкладки и мост для игры ----------
+  function showTab(name) {
+    const game = name === 'game';
+    $('codeTab').hidden = game;
+    $('gameTab').hidden = !game;
+    $('tabCode').classList.toggle('on', !game);
+    $('tabGame').classList.toggle('on', game);
+    if (!game && window.Game) window.Game.onHide();
+  }
+  $('tabCode').addEventListener('click', () => showTab('code'));
+  $('tabGame').addEventListener('click', () => showTab('game'));
+  window.Net = { send, nick: () => myNick, showGame: () => showTab('game') };
+
   connect();
 })();
 </script>
+<script src="game.js"></script>
 </body>
 </html>
