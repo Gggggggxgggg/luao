@@ -36,6 +36,8 @@ let state = {
   chat: [],
   charts: {},
   scores: {},
+  users: {},
+  sessions: {},
 };
 
 try {
@@ -45,6 +47,8 @@ try {
     state.chat = Array.isArray(raw.chat) ? raw.chat.slice(-MAX_CHAT_HISTORY) : [];
     if (raw.charts && typeof raw.charts === 'object') state.charts = raw.charts;
     if (raw.scores && typeof raw.scores === 'object') state.scores = raw.scores;
+    if (raw.users && typeof raw.users === 'object') state.users = raw.users;
+    if (raw.sessions && typeof raw.sessions === 'object') state.sessions = raw.sessions;
   }
 } catch (_) {
   /* первый запуск — файла ещё нет */
@@ -185,13 +189,29 @@ function leaveMatch(ws) {
 function handleGame(ws, m, now) {
   const num = (v, a, b) => clamp(v, a, b);
   switch (m.type) {
+    case 'auth': {
+      const name = sessionUser(m.token);
+      if (name) {
+        ws.user = name;
+        ws.nick = name;
+      } else if (ws.user) {
+        ws.user = null;
+        ws.nick = null;
+      }
+      sendTo(ws, { type: 'auth', name });
+      sendPlayers();
+      sendLobby();
+      return true;
+    }
+
     case 'hello':
-      ws.nick = cleanText(m.nick, MAX_NICK_LEN).trim() || 'Гость';
+      ws.nick = ws.user || guestNick(m.nick);
       sendPlayers();
       sendLobby();
       return true;
 
     case 'chart_save': {
+      if (!ws.user) return sendTo(ws, { type: 'error', text: 'Войди в аккаунт, чтобы создавать треки' }), true;
       const v = validateChart(m.chart);
       if (!v) return sendTo(ws, { type: 'error', text: 'Некорректный трек (проверь название, ссылку, BPM и ноты)' }), true;
       const id = m.chart.id;
@@ -199,6 +219,7 @@ function handleGame(ws, m, now) {
       let changed = false;
       if (typeof id === 'string' && Object.hasOwn(state.charts, id) && id !== 'demo') {
         const old = state.charts[id];
+        if (old.author !== ws.user) return sendTo(ws, { type: 'error', text: 'Править трек может только автор' }), true;
         changed = JSON.stringify([old.steps, old.bpm, old.offset]) !== JSON.stringify([v.steps, v.bpm, v.offset]);
         chart = { ...old, ...v };
         if (changed) delete state.scores[id];
@@ -206,7 +227,7 @@ function handleGame(ws, m, now) {
         if (Object.keys(state.charts).length >= MAX_CHARTS) {
           return sendTo(ws, { type: 'error', text: 'Слишком много треков, удали ненужные' }), true;
         }
-        chart = { id: rid(), author: cleanText(m.nick, MAX_NICK_LEN).trim() || ws.nick || 'Гость', ts: now, ...v };
+        chart = { id: rid(), author: ws.user, ts: now, ...v };
       }
       state.charts[chart.id] = chart;
       broadcast({ type: 'chart', chart });
@@ -218,6 +239,7 @@ function handleGame(ws, m, now) {
     case 'chart_delete': {
       const id = String(m.id);
       if (id === 'demo' || !Object.hasOwn(state.charts, id)) return true;
+      if (state.charts[id].author !== ws.user) return sendTo(ws, { type: 'error', text: 'Удалить трек может только автор' }), true;
       delete state.charts[id];
       delete state.scores[id];
       broadcast({ type: 'chart_delete', id });
@@ -229,7 +251,8 @@ function handleGame(ws, m, now) {
     case 'score': {
       const id = String(m.chartId);
       if (!Object.hasOwn(state.charts, id)) return true;
-      const nick = cleanText(m.nick, MAX_NICK_LEN).trim() || 'Гость';
+      if (!ws.user) return true; // в рейтинг попадают только вошедшие игроки
+      const nick = ws.user;
       const score = Math.round(num(m.score, 0, 1e9));
       const acc = num(m.acc, 0, 100);
       if (score > noteCount(state.charts[id]) * 600) return true; // больше максимума быть не может
@@ -316,8 +339,121 @@ function handleGame(ws, m, now) {
 
 if (!Object.keys(state.charts).length) state.charts.demo = demoChart();
 
+// ---------- аккаунты ----------
+const USER_RE = /^[\p{L}\p{N}_-]{3,20}$/u;
+const RESERVED = new Set(['guest', 'admin', 'system', 'гость', 'админ', 'система']);
+const SESSION_TTL = 30 * 24 * 3600 * 1000;
+const MAX_USERS = 5000;
+const hits = new Map();
+
+function limited(key, max, windowMs) {
+  const now = Date.now();
+  const arr = (hits.get(key) || []).filter((t) => now - t < windowMs);
+  if (arr.length >= max) {
+    hits.set(key, arr);
+    return true;
+  }
+  arr.push(now);
+  hits.set(key, arr);
+  return false;
+}
+
+const scrypt = (pw, salt) =>
+  new Promise((resolve, reject) => crypto.scrypt(pw, salt, 64, (e, k) => (e ? reject(e) : resolve(k))));
+const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
+const userKey = (n) => 'u_' + String(n).toLowerCase();
+
+function newSession(key) {
+  const token = crypto.randomBytes(32).toString('hex');
+  state.sessions[sha(token)] = { u: key, ts: Date.now() };
+  scheduleSave();
+  return token;
+}
+
+function sessionUser(token) {
+  if (typeof token !== 'string' || token.length !== 64) return null;
+  const h = sha(token);
+  if (!Object.hasOwn(state.sessions, h)) return null;
+  const s = state.sessions[h];
+  const now = Date.now();
+  if (now - s.ts > SESSION_TTL || !Object.hasOwn(state.users, s.u)) {
+    delete state.sessions[h];
+    scheduleSave();
+    return null;
+  }
+  if (now - s.ts > 24 * 3600 * 1000) {
+    s.ts = now;
+    scheduleSave();
+  }
+  return state.users[s.u].name;
+}
+
+// гость не может выдавать себя за зарегистрированного игрока
+function guestNick(raw) {
+  const n = cleanText(raw, MAX_NICK_LEN).trim() || 'Гость';
+  return Object.hasOwn(state.users, userKey(n)) ? n.slice(0, MAX_NICK_LEN - 8) + ' (гость)' : n;
+}
+
+function readCreds(req) {
+  return {
+    name: String(req.body?.username ?? '').trim(),
+    pw: String(req.body?.password ?? ''),
+  };
+}
+
 // ---------- HTTP ----------
 const app = express();
+app.set('trust proxy', 1);
+app.use('/api', express.json({ limit: '2kb' }));
+
+app.post('/api/register', async (req, res) => {
+  try {
+    if (limited('reg:' + req.ip, 5, 3600 * 1000)) return res.status(429).json({ error: 'Слишком много попыток, попробуй позже' });
+    const { name, pw } = readCreds(req);
+    if (!USER_RE.test(name) || RESERVED.has(name.toLowerCase())) {
+      return res.status(400).json({ error: 'Имя: 3–20 символов — буквы, цифры, _ и -' });
+    }
+    if (pw.length < 8 || pw.length > 128) return res.status(400).json({ error: 'Пароль: от 8 до 128 символов' });
+    const key = userKey(name);
+    if (Object.hasOwn(state.users, key)) return res.status(409).json({ error: 'Это имя уже занято' });
+    if (Object.keys(state.users).length >= MAX_USERS) return res.status(503).json({ error: 'Регистрация закрыта: слишком много пользователей' });
+    const salt = crypto.randomBytes(16);
+    const hash = await scrypt(pw, salt);
+    if (Object.hasOwn(state.users, key)) return res.status(409).json({ error: 'Это имя уже занято' });
+    state.users[key] = { name, salt: salt.toString('hex'), hash: hash.toString('hex'), created: Date.now() };
+    res.json({ name, token: newSession(key) });
+  } catch (e) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { name, pw } = readCreds(req);
+    if (limited('login:' + req.ip, 10, 600 * 1000) || limited('loginu:' + name.toLowerCase(), 10, 600 * 1000)) {
+      return res.status(429).json({ error: 'Слишком много попыток, попробуй через несколько минут' });
+    }
+    const key = userKey(name);
+    const rec = Object.hasOwn(state.users, key) ? state.users[key] : null;
+    const hash = await scrypt(pw.slice(0, 128), rec ? Buffer.from(rec.salt, 'hex') : crypto.randomBytes(16));
+    if (!rec || !crypto.timingSafeEqual(hash, Buffer.from(rec.hash, 'hex'))) {
+      return res.status(401).json({ error: 'Неверное имя или пароль' });
+    }
+    res.json({ name: rec.name, token: newSession(key) });
+  } catch (e) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.post('/api/logout', (req, res) => {
+  const t = req.body?.token;
+  if (typeof t === 'string' && Object.hasOwn(state.sessions, sha(t))) {
+    delete state.sessions[sha(t)];
+    scheduleSave();
+  }
+  res.json({ ok: true });
+});
+
 app.get('/healthz', (_req, res) => res.send('ok'));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -350,6 +486,7 @@ wss.on('connection', (ws) => {
   ws.isAlive = true;
   ws.id = rid();
   ws.nick = null;
+  ws.user = null;
   ws.match = null;
   ws.on('pong', () => (ws.isAlive = true));
 
@@ -413,12 +550,12 @@ wss.on('connection', (ws) => {
       case 'chat': {
         const text = cleanText(m.text, MAX_MSG_LEN).trim();
         if (!text) return;
-        const nick = cleanText(m.nick, MAX_NICK_LEN).trim() || 'Гость';
+        const nick = ws.user || guestNick(m.nick);
         pushChat({ nick, text, ts: now });
         break;
       }
       case 'ran': {
-        const nick = cleanText(m.nick, MAX_NICK_LEN).trim() || 'Гость';
+        const nick = ws.user || guestNick(m.nick);
         const name = String(m.name);
         if (!(Object.hasOwn(state.files, name))) return;
         pushChat({ system: true, text: `${nick} запустил ${name}`, ts: now });
@@ -455,6 +592,11 @@ setInterval(() => {
     }
   }
   if (expired) sendLobby();
+  for (const [k, arr] of hits) {
+    const fresh = arr.filter((t) => now - t < 3600 * 1000);
+    if (fresh.length) hits.set(k, fresh);
+    else hits.delete(k);
+  }
   for (const ws of wss.clients) {
     if (!ws.isAlive) {
       ws.terminate();

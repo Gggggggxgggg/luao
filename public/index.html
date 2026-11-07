@@ -48,6 +48,16 @@
   button.run { background: var(--moon); color: var(--moon-ink); border-color: var(--moon); font-weight: 600; }
 
   [hidden] { display: none !important; }
+  #authBox { display: flex; gap: 6px; align-items: center; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; width: min(340px, 92vw); }
+  dialog::backdrop { background: rgba(0,0,0,.7); }
+  dialog h2 { margin: 0 0 12px; font-size: 17px; }
+  dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  dialog input { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; color: var(--text); outline: none; }
+  dialog input:focus { border-color: var(--moon); }
+  dialog .err { color: var(--err); font-size: 13px; min-height: 18px; margin-bottom: 6px; }
+  dialog .row { display: flex; gap: 8px; }
+  dialog .link { background: none; border: 0; color: var(--muted); padding: 10px 0 0; text-decoration: underline; cursor: pointer; }
   .tabs { display: flex; gap: 4px; }
   .tabs button.on { background: var(--moon); color: var(--moon-ink); border-color: var(--moon); font-weight: 600; }
   #gameTab { min-height: 0; overflow: auto; }
@@ -122,6 +132,11 @@
   <label class="nick">Ник
     <input type="text" id="nick" maxlength="20" autocomplete="off">
   </label>
+  <span id="authBox">
+    <button id="btnLogin">Войти</button>
+    <button id="btnReg">Регистрация</button>
+    <button id="btnLogout" hidden>Выйти</button>
+  </span>
 </header>
 
 <main id="codeTab">
@@ -155,6 +170,21 @@
   </aside>
 </main>
 <div id="gameTab" hidden></div>
+
+<dialog id="authDlg">
+  <form id="authForm">
+    <h2 id="authTitle">Вход</h2>
+    <label>Имя<input type="text" id="authUser" autocomplete="username" maxlength="20" required></label>
+    <label>Пароль<input type="password" id="authPass" autocomplete="current-password" maxlength="128" required></label>
+    <label id="authPass2Wrap" hidden>Повтори пароль<input type="password" id="authPass2" autocomplete="new-password" maxlength="128"></label>
+    <div class="err" id="authErr" role="alert"></div>
+    <div class="row">
+      <button type="submit" class="run" id="authSubmit">Войти</button>
+      <button type="button" id="authCancel">Отмена</button>
+    </div>
+    <button type="button" class="link" id="authSwitch"></button>
+  </form>
+</dialog>
 
 <script type="text/plain" id="prelude">
 -- Общая файловая система (файлы редактора), require/dofile/loadfile, io, os.
@@ -591,6 +621,7 @@ end, "", 100000)
   setInterval(() => send({ type: 'ping' }), 25000);
 
   function handle(m) {
+    if (m.type === 'init' && localStorage.getItem('token')) send({ type: 'auth', token: localStorage.getItem('token') });
     if (window.Game) window.Game.onMessage(m);
     switch (m.type) {
       case 'init':
@@ -601,6 +632,10 @@ end, "", 100000)
         messagesEl.innerHTML = '';
         m.chat.forEach(addMessage);
         $('online').textContent = m.online;
+        break;
+      case 'auth':
+        if (m.name) { localStorage.setItem('userName', m.name); applyUser(m.name); }
+        else { localStorage.removeItem('token'); localStorage.removeItem('userName'); applyUser(null); }
         break;
       case 'online':
         $('online').textContent = m.count;
@@ -889,7 +924,85 @@ end, "", 100000)
   }
   $('tabCode').addEventListener('click', () => showTab('code'));
   $('tabGame').addEventListener('click', () => showTab('game'));
-  window.Net = { send, nick: () => myNick, showGame: () => showTab('game') };
+  // ---------- аккаунт ----------
+  let user = null;
+  let authMode = 'login';
+  const dlg = $('authDlg');
+  const authHeaders = { 'Content-Type': 'application/json' };
+
+  function applyUser(name) {
+    user = name || null;
+    nickEl.readOnly = !!user;
+    if (user) {
+      nickEl.value = user;
+      myNick = user;
+      nickEl.title = 'Ник привязан к аккаунту';
+    } else {
+      nickEl.value = localStorage.getItem('nick') || nickEl.value;
+      myNick = nickEl.value.trim() || 'Гость';
+      nickEl.title = '';
+    }
+    $('btnLogin').hidden = $('btnReg').hidden = !!user;
+    $('btnLogout').hidden = !user;
+  }
+
+  function openAuth(mode) {
+    authMode = mode;
+    const reg = mode === 'register';
+    $('authTitle').textContent = reg ? 'Регистрация' : 'Вход';
+    $('authSubmit').textContent = reg ? 'Создать аккаунт' : 'Войти';
+    $('authSwitch').textContent = reg ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться';
+    $('authPass2Wrap').hidden = !reg;
+    $('authPass').autocomplete = reg ? 'new-password' : 'current-password';
+    $('authErr').textContent = '';
+    $('authPass').value = '';
+    $('authPass2').value = '';
+    dlg.showModal();
+    $('authUser').focus();
+  }
+
+  $('btnLogin').addEventListener('click', () => openAuth('login'));
+  $('btnReg').addEventListener('click', () => openAuth('register'));
+  $('authSwitch').addEventListener('click', () => openAuth(authMode === 'login' ? 'register' : 'login'));
+  $('authCancel').addEventListener('click', () => dlg.close());
+
+  $('authForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = $('authUser').value.trim();
+    const password = $('authPass').value;
+    if (authMode === 'register' && password !== $('authPass2').value) {
+      $('authErr').textContent = 'Пароли не совпадают';
+      return;
+    }
+    $('authSubmit').disabled = true;
+    try {
+      const r = await fetch('/api/' + authMode, { method: 'POST', headers: authHeaders, body: JSON.stringify({ username, password }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { $('authErr').textContent = data.error || 'Ошибка'; return; }
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('userName', data.name);
+      applyUser(data.name);
+      send({ type: 'auth', token: data.token });
+      dlg.close();
+    } catch {
+      $('authErr').textContent = 'Нет связи с сервером';
+    } finally {
+      $('authSubmit').disabled = false;
+    }
+  });
+
+  $('btnLogout').addEventListener('click', async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST', headers: authHeaders, body: JSON.stringify({ token: localStorage.getItem('token') }) });
+    } catch { /* всё равно выходим локально */ }
+    localStorage.removeItem('token');
+    localStorage.removeItem('userName');
+    location.reload();
+  });
+
+  if (localStorage.getItem('token') && localStorage.getItem('userName')) applyUser(localStorage.getItem('userName'));
+
+  window.Net = { send, nick: () => myNick, user: () => user, openAuth, showGame: () => showTab('game') };
 
   connect();
 })();

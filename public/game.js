@@ -205,6 +205,7 @@
     const c = charts[selected];
     if (!c) return;
     if (c.id === 'demo') return toast('Демо-трек удалить нельзя');
+    if (c.author !== Net.user()) return toast('Удалить трек может только автор');
     if (confirm(`Удалить трек «${c.title}» у всех вместе с рекордами?`)) Net.send({ type: 'chart_delete', id: c.id });
   });
   $('gmOpen').addEventListener('click', () => {
@@ -380,7 +381,7 @@
     audio.pause();
     const acc = Math.round((G.wsum / (G.total * 300)) * 10000) / 100;
     G.result = { score: G.score, acc, maxCombo: G.maxCombo, counts: { ...G.counts }, rank: rankOf(acc) };
-    if (G.mode !== 'test') Net.send({ type: 'score', chartId: G.chart.id, nick: nick(), score: G.score, acc });
+    if (G.mode !== 'test' && Net.user()) Net.send({ type: 'score', chartId: G.chart.id, score: G.score, acc });
     if (G.mode === 'match') Net.send({ type: 'match_finish', score: G.score, acc, maxCombo: G.maxCombo });
     showResult();
   }
@@ -393,6 +394,7 @@
       <div class="big">${r.score}</div>
       <div class="small">Точность ${r.acc}% · макс. комбо ${r.maxCombo}</div>
       <div class="small">Perfect ${c.perfect} · Great ${c.great} · Good ${c.good} · Miss ${c.miss}</div>
+      ${!Net.user() && G.mode !== 'test' ? '<div class="small">Войди в аккаунт, чтобы очки попали в рейтинг</div>' : ''}
       ${G.mode === 'match' ? `<div class="big">${extra || 'Ждём соперника…'}</div>` : ''}
       <div class="row">
         ${G.mode === 'match' ? (extra ? '<button data-a="rematch">Реванш</button>' : '')
@@ -562,7 +564,8 @@
     E = chart
       ? { id: chart.id, title: chart.title, url: chart.url, bpm: chart.bpm, offset: chart.offset, measures: chart.measures, speed: chart.speed, steps: chart.steps.slice(), m: 0 }
       : { id: null, title: '', url: '', bpm: 120, offset: 0, measures: 8, speed: 10, steps: Array(8 * 16).fill(0), m: 0 };
-    if (chart && chart.id === 'demo') E.id = null; // демо не перезаписываем — создастся копия
+    // чужие треки и демо не перезаписываем — сохранится как твоя копия
+    if (chart && (chart.id === 'demo' || chart.author !== Net.user())) { E.id = null; E.fork = true; }
     $('gmMenu').hidden = true;
     $('gmEditor').hidden = false;
     renderEditor();
@@ -591,7 +594,7 @@
       lanes += `<div class="lane">${cells}</div>`;
     }
     $('gmEditor').innerHTML = `
-      <h3>${E.id ? 'Редактирование трека' : 'Новый трек'} <button id="edClose">← Назад</button></h3>
+      <h3>${E.id ? 'Редактирование трека' : E.fork ? 'Копия трека (автором станешь ты)' : 'Новый трек'} <button id="edClose">← Назад</button></h3>
       <div class="grid2">
         <label>Название<input type="text" id="edTitle" maxlength="40" value="${esc(E.title)}"></label>
         <label>Ссылка на музыку (прямая, mp3/ogg/wav)<input type="url" id="edUrl" maxlength="500" placeholder="https://…/track.mp3" value="${esc(E.url)}"></label>
@@ -662,6 +665,7 @@
       return startGame(editorChart(), 'test');
     }
     if (btn.id === 'edSave') {
+      if (!Net.user()) { toast('Войди в аккаунт, чтобы сохранять треки'); return Net.openAuth('login'); }
       if (!E.title.trim()) return toast('Введи название');
       if (!E.steps.some(Boolean)) return toast('Добавь хотя бы одну ноту');
       awaitSave = true;
