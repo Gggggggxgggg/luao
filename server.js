@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const Chess = require('./chess');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
@@ -38,6 +39,7 @@ let state = {
   scores: {},
   users: {},
   sessions: {},
+  chess: {},
 };
 
 try {
@@ -49,6 +51,7 @@ try {
     if (raw.scores && typeof raw.scores === 'object') state.scores = raw.scores;
     if (raw.users && typeof raw.users === 'object') state.users = raw.users;
     if (raw.sessions && typeof raw.sessions === 'object') state.sessions = raw.sessions;
+    if (raw.chess && typeof raw.chess === 'object') state.chess = raw.chess;
   }
 } catch (_) {
   /* первый запуск — файла ещё нет */
@@ -138,7 +141,7 @@ const byId = (id) => {
 };
 
 function playersList() {
-  return [...wss.clients].filter((c) => c.nick).map((c) => ({ id: c.id, nick: c.nick, busy: !!c.match }));
+  return [...wss.clients].filter((c) => c.nick).map((c) => ({ id: c.id, nick: c.nick, busy: !!c.match, cg: !!c.cg }));
 }
 function sendPlayers() {
   broadcast({ type: 'players', list: playersList() });
@@ -480,12 +483,293 @@ function handleDoors(ws, m) {
       return true;
 
     default:
-      return false;
+      return handleChess(ws, m);
   }
 }
 
 function broadcastTo(set, obj) {
   for (const p of set) sendTo(p, obj);
+}
+
+// ---------- ШАХМАТЫ: вызовы, партии, часы, бот, рейтинг ----------
+const chessGames = new Map();
+const chessChallenges = new Map(); // id вызывающего -> { to: id | 'all', tc, color, ts }
+const CHESS_TCS = [0, 3, 5, 10]; // минут на партию на сторону (0 — без часов)
+
+const chessRating = (nick) => (state.chess['n_' + nick] ||= { nick, r: 1200, w: 0, l: 0, d: 0 });
+function chessRatingsList() {
+  return Object.values(state.chess).sort((a, b) => b.r - a.r).slice(0, 20)
+    .map(({ nick, r, w, l, d }) => ({ nick, r: Math.round(r), w, l, d }));
+}
+const chessBroadcastRatings = () => broadcast({ type: 'c_ratings', list: chessRatingsList() });
+
+function chessLobbyFor(ws) {
+  const list = [];
+  for (const [from, ch] of chessChallenges) {
+    if (from === ws.id || ch.to === 'all' || ch.to === ws.id) {
+      list.push({ from, nick: byId(from)?.nick || 'Гость', to: ch.to, tc: ch.tc, color: ch.color, mine: from === ws.id });
+    }
+  }
+  return list;
+}
+function chessSendLobby() {
+  for (const c of wss.clients) sendTo(c, { type: 'c_lobby', list: chessLobbyFor(c) });
+}
+
+function chessClock(g) {
+  if (!g.tc) return null;
+  const c = { w: g.clock.w, b: g.clock.b };
+  const running = g.result ? null : g.state.turn;
+  if (running && g.history.length >= 2) c[running] -= Date.now() - g.clock.since;
+  return { w: Math.max(0, c.w), b: Math.max(0, c.b), running: g.history.length >= 2 ? running : null };
+}
+
+function chessView(g, color) {
+  const myTurn = !g.result && g.state.turn === color;
+  return {
+    id: g.id, you: color, tc: g.tc, now: Date.now(),
+    white: g.players.w.nick, black: g.players.b.nick, bot: g.bot ? g.bot.level : 0,
+    board: g.state.b.map((p) => p || '.').join(''), turn: g.state.turn,
+    legal: myTurn ? g.legal.map((m) => [m.from, m.to, m.promo || '']) : [],
+    history: g.history.map((h) => h.san), last: g.history.length ? { from: g.history[g.history.length - 1].from, to: g.history[g.history.length - 1].to } : null,
+    check: Chess.inCheck(g.state), result: g.result, clock: chessClock(g), drawOffer: g.drawOffer,
+  };
+}
+
+function chessSendAll(g) {
+  for (const c of ['w', 'b']) {
+    const s = g.players[c];
+    if (s.ws) sendTo(s.ws, { type: 'c_game', g: chessView(g, c) });
+  }
+}
+
+function chessEnd(g, result) {
+  if (g.result) return;
+  g.result = result;
+  g.legal = [];
+  g.endedAt = Date.now();
+  for (const c of ['w', 'b']) {
+    const s = g.players[c];
+    clearTimeout(s.grace);
+    if (s.ws) s.ws.cg = null;
+  }
+  // рейтинг Эло — только между двумя вошедшими игроками
+  const w = g.players.w, b = g.players.b;
+  if (!g.bot && w.user && b.user && w.user !== b.user && result.reason !== 'отключение') {
+    const rw = chessRating(w.user), rb = chessRating(b.user);
+    const ew = 1 / (1 + 10 ** ((rb.r - rw.r) / 400));
+    const sw = result.winner === 'w' ? 1 : result.winner === 'b' ? 0 : 0.5;
+    rw.r += 24 * (sw - ew);
+    rb.r += 24 * (1 - sw - (1 - ew));
+    if (sw === 1) { rw.w++; rb.l++; } else if (sw === 0) { rw.l++; rb.w++; } else { rw.d++; rb.d++; }
+    scheduleSave();
+    chessBroadcastRatings();
+  }
+  chessSendAll(g);
+  sendPlayers();
+}
+
+function chessPlay(g, m) {
+  const st = g.state, color = st.turn, now = Date.now();
+  if (g.tc) {
+    if (g.history.length >= 2) g.clock[color] -= now - g.clock.since;
+    g.clock.since = now;
+    if (g.clock[color] <= 0) return chessEnd(g, { winner: color === 'w' ? 'b' : 'w', reason: 'время' });
+  }
+  const text = Chess.san(st, m, g.legal);
+  g.state = Chess.apply(st, m);
+  g.history.push({ san: text, from: m.from, to: m.to });
+  g.drawOffer = null;
+  g.legal = Chess.legal(g.state);
+  const key = Chess.posKey(g.state);
+  const n = (g.seen.get(key) || 0) + 1;
+  g.seen.set(key, n);
+  const s = Chess.status(g.state, g.legal);
+  if (s === 'checkmate') return chessEnd(g, { winner: color, reason: 'мат' });
+  if (s === 'stalemate') return chessEnd(g, { winner: null, reason: 'пат' });
+  if (s === 'fifty') return chessEnd(g, { winner: null, reason: 'правило 50 ходов' });
+  if (s === 'insufficient') return chessEnd(g, { winner: null, reason: 'недостаточно материала' });
+  if (n >= 3) return chessEnd(g, { winner: null, reason: 'троекратное повторение' });
+  chessSendAll(g);
+  chessMaybeBot(g);
+}
+
+function chessMaybeBot(g) {
+  if (g.result || !g.bot || g.state.turn !== g.bot.color) return;
+  setTimeout(() => {
+    if (g.result || !chessGames.has(g.id) || g.state.turn !== g.bot.color) return;
+    chessPlay(g, Chess.bestMove(g.state, g.bot.level, g.legal));
+  }, 500 + Math.random() * 600);
+}
+
+// a — игрок, b — соперник или null (тогда бот уровня level)
+function chessStart(a, b, aColor, tc, level) {
+  const ac = aColor === 'r' ? (Math.random() < 0.5 ? 'w' : 'b') : aColor;
+  const sa = { ws: a, nick: a.nick || 'Гость', user: a.user };
+  const sb = b ? { ws: b, nick: b.nick || 'Гость', user: b.user } : { ws: null, nick: `Компьютер ${'★'.repeat(level)}`, bot: true };
+  const st = Chess.startState();
+  const g = {
+    id: rid(), players: ac === 'w' ? { w: sa, b: sb } : { w: sb, b: sa }, state: st, history: [], legal: Chess.legal(st),
+    seen: new Map([[Chess.posKey(st), 1]]), tc, clock: { w: tc * 60000, b: tc * 60000, since: Date.now() },
+    result: null, drawOffer: null, bot: b ? null : { level, color: ac === 'w' ? 'b' : 'w' },
+  };
+  chessGames.set(g.id, g);
+  a.cg = g;
+  if (b) b.cg = g;
+  for (const [from, ch] of chessChallenges) {
+    if (from === a.id || (b && from === b.id) || ch.to === a.id || (b && ch.to === b.id)) chessChallenges.delete(from);
+  }
+  chessSendAll(g);
+  chessSendLobby();
+  sendPlayers();
+  chessMaybeBot(g);
+}
+
+const chessColorOf = (g, ws) => (g.players.w.ws === ws ? 'w' : g.players.b.ws === ws ? 'b' : null);
+
+function chessLeave(ws) {
+  let changed = false;
+  for (const [from, c] of chessChallenges) {
+    if (from === ws.id || c.to === ws.id) { chessChallenges.delete(from); changed = true; }
+  }
+  if (changed) chessSendLobby();
+  const g = ws.cg;
+  if (!g || g.result) return;
+  const color = chessColorOf(g, ws);
+  if (!color) return;
+  const slot = g.players[color];
+  slot.ws = null;
+  ws.cg = null;
+  // 40 секунд на возвращение (обрыв связи на телефоне), иначе партия засчитывается сопернику
+  slot.grace = setTimeout(() => {
+    if (g.result || slot.ws) return;
+    const opp = g.players[color === 'w' ? 'b' : 'w'];
+    if (g.bot || !opp.ws) chessGames.delete(g.id);
+    else chessEnd(g, { winner: color === 'w' ? 'b' : 'w', reason: 'отключение' });
+  }, 40000);
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, g] of chessGames) {
+    if (g.result) {
+      if (now - g.endedAt > 600000) chessGames.delete(id);
+      continue;
+    }
+    if (!g.tc || g.history.length < 2) continue;
+    const run = g.state.turn;
+    if (g.clock[run] - (now - g.clock.since) <= 0) {
+      g.clock[run] = 0;
+      chessEnd(g, { winner: run === 'w' ? 'b' : 'w', reason: 'время' });
+    }
+  }
+}, 1000);
+
+function handleChess(ws, m) {
+  switch (m.type) {
+    case 'c_peek':
+      sendTo(ws, { type: 'players', list: playersList() });
+      sendTo(ws, { type: 'c_lobby', list: chessLobbyFor(ws) });
+      sendTo(ws, { type: 'c_ratings', list: chessRatingsList() });
+      return true;
+
+    case 'c_challenge': {
+      const tc = Number(m.tc);
+      const color = ['w', 'b', 'r'].includes(m.color) ? m.color : 'r';
+      if (ws.cg || !CHESS_TCS.includes(tc)) return true;
+      const to = m.to === 'all' ? 'all' : String(m.to);
+      if (to !== 'all' && (to === ws.id || !byId(to))) return true;
+      chessChallenges.set(ws.id, { to, tc, color, ts: Date.now() });
+      chessSendLobby();
+      return true;
+    }
+
+    case 'c_cancel':
+      if (chessChallenges.delete(ws.id)) chessSendLobby();
+      return true;
+
+    case 'c_decline': {
+      const ch = chessChallenges.get(String(m.from));
+      if (ch && ch.to === ws.id) {
+        chessChallenges.delete(String(m.from));
+        sendTo(byId(String(m.from)), { type: 'c_info', text: `${ws.nick || 'Игрок'} отклонил вызов` });
+        chessSendLobby();
+      }
+      return true;
+    }
+
+    case 'c_accept': {
+      const from = String(m.from);
+      const ch = chessChallenges.get(from);
+      const challenger = byId(from);
+      if (!ch || !challenger || challenger === ws || challenger.cg || ws.cg) return true;
+      if (ch.to !== 'all' && ch.to !== ws.id) return true;
+      chessStart(challenger, ws, ch.color, ch.tc);
+      return true;
+    }
+
+    case 'c_bot': {
+      const tc = Number(m.tc);
+      if (ws.cg || !CHESS_TCS.includes(tc)) return true;
+      const level = Math.round(clamp(m.level, 1, 3));
+      chessStart(ws, null, ['w', 'b', 'r'].includes(m.color) ? m.color : 'r', tc, level);
+      return true;
+    }
+
+    case 'c_move': {
+      const g = ws.cg;
+      if (!g || g.result) return true;
+      const color = chessColorOf(g, ws);
+      if (!color || g.state.turn !== color) return true;
+      const from = Number(m.from), to = Number(m.to), promo = String(m.promo || '');
+      const mv = g.legal.find((x) => x.from === from && x.to === to && (x.promo ? x.promo === (promo || 'q') : true));
+      if (!mv) return sendTo(ws, { type: 'c_game', g: chessView(g, color) }), true; // рассинхрон — отправляем позицию заново
+      chessPlay(g, mv);
+      return true;
+    }
+
+    case 'c_resign': {
+      const g = ws.cg;
+      const color = g && chessColorOf(g, ws);
+      if (g && color && !g.result) chessEnd(g, { winner: color === 'w' ? 'b' : 'w', reason: 'сдача' });
+      return true;
+    }
+
+    case 'c_draw': {
+      const g = ws.cg;
+      const color = g && chessColorOf(g, ws);
+      if (!g || !color || g.result) return true;
+      if (g.bot) return sendTo(ws, { type: 'c_info', text: 'Компьютер отклонил ничью' }), true;
+      g.drawOffer = color;
+      chessSendAll(g);
+      return true;
+    }
+
+    case 'c_draw_reply': {
+      const g = ws.cg;
+      const color = g && chessColorOf(g, ws);
+      if (!g || !color || g.result || !g.drawOffer || g.drawOffer === color) return true;
+      if (m.accept) chessEnd(g, { winner: null, reason: 'по соглашению' });
+      else { g.drawOffer = null; chessSendAll(g); }
+      return true;
+    }
+
+    case 'c_resume': {
+      const g = chessGames.get(String(m.id));
+      const color = g && ['w', 'b'].find((c) => !g.players[c].ws && !g.players[c].bot && g.players[c].nick === ws.nick);
+      if (!g || !color) return sendTo(ws, { type: 'c_gone' }), true;
+      const slot = g.players[color];
+      clearTimeout(slot.grace);
+      slot.ws = ws;
+      ws.cg = g.result ? null : g;
+      sendTo(ws, { type: 'c_game', g: chessView(g, color) });
+      sendPlayers();
+      return true;
+    }
+
+    default:
+      return false;
+  }
 }
 
 if (!Object.keys(state.charts).length) state.charts.demo = demoChart();
@@ -639,6 +923,7 @@ wss.on('connection', (ws) => {
   ws.nick = null;
   ws.user = null;
   ws.match = null;
+  ws.cg = null;
   ws.on('pong', () => (ws.isAlive = true));
 
   // простой лимит: не больше 60 сообщений в секунду с одного клиента
@@ -719,6 +1004,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     doorsLeave(ws);
+    chessLeave(ws);
     leaveMatch(ws);
     let changed = false;
     for (const [from, c] of challenges) {

@@ -60,7 +60,7 @@
   dialog .link { background: none; border: 0; color: var(--muted); padding: 10px 0 0; text-decoration: underline; cursor: pointer; }
   .tabs { display: flex; gap: 4px; }
   .tabs button.on { background: var(--moon); color: var(--moon-ink); border-color: var(--moon); font-weight: 600; }
-  #gameTab, #doorsTab { min-height: 0; overflow: auto; }
+  #gameTab, #doorsTab, #chessTab { min-height: 0; overflow: auto; }
 
   main {
     display: grid; grid-template-columns: 200px minmax(0, 1fr) 300px; min-height: 0;
@@ -126,6 +126,7 @@
     <button id="tabCode" class="on">Код</button>
     <button id="tabGame">Игра</button>
     <button id="tabDoors">Doors</button>
+    <button id="tabChess">Шахматы</button>
   </nav>
   <span class="status" id="status">подключаюсь…</span>
   <span class="status">онлайн: <b id="online">0</b></span>
@@ -172,6 +173,7 @@
 </main>
 <div id="gameTab" hidden></div>
 <div id="doorsTab" hidden></div>
+<div id="chessTab" hidden></div>
 
 <dialog id="authDlg">
   <form id="authForm">
@@ -626,6 +628,7 @@ end, "", 100000)
     if (m.type === 'init' && localStorage.getItem('token')) send({ type: 'auth', token: localStorage.getItem('token') });
     if (window.Game) window.Game.onMessage(m);
     if (window.Doors) window.Doors.onMessage(m);
+    if (window.Chess) window.Chess.onMessage(m);
     switch (m.type) {
       case 'init':
         files = m.files;
@@ -918,17 +921,19 @@ end, "", 100000)
 
   // ---------- вкладки и мост для игры ----------
   function showTab(name) {
-    $('codeTab').hidden = name !== 'code';
-    $('gameTab').hidden = name !== 'game';
-    $('doorsTab').hidden = name !== 'doors';
-    for (const t of ['Code', 'Game', 'Doors']) $('tab' + t).classList.toggle('on', name === t.toLowerCase());
+    for (const t of ['code', 'game', 'doors', 'chess']) {
+      $(t + 'Tab').hidden = t !== name;
+      $('tab' + t[0].toUpperCase() + t.slice(1)).classList.toggle('on', t === name);
+    }
     if (name !== 'game' && window.Game) window.Game.onHide();
     if (name !== 'doors' && window.Doors) window.Doors.onHide();
     if (name === 'doors' && window.Doors) window.Doors.onShow();
+    if (name === 'chess' && window.Chess) window.Chess.onShow();
   }
   $('tabCode').addEventListener('click', () => showTab('code'));
   $('tabGame').addEventListener('click', () => showTab('game'));
   $('tabDoors').addEventListener('click', () => showTab('doors'));
+  $('tabChess').addEventListener('click', () => showTab('chess'));
   // ---------- аккаунт ----------
   let user = null;
   let authMode = 'login';
@@ -1007,12 +1012,13 @@ end, "", 100000)
 
   if (localStorage.getItem('token') && localStorage.getItem('userName')) applyUser(localStorage.getItem('userName'));
 
-  window.Net = { send, nick: () => myNick, user: () => user, openAuth, showGame: () => showTab('game') };
+  window.Net = { send, nick: () => myNick, user: () => user, openAuth, showGame: () => showTab('game'), showChess: () => showTab('chess') };
 
   connect();
 })();
 </script>
 <script src="game.js"></script>
 <script src="doors.js"></script>
+<script src="chess.js"></script>
 </body>
 </html>
