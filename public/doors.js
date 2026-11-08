@@ -20,26 +20,42 @@
     };
   }
 
-  function genRoom(seed, i, goal) {
+  function genRoom(seed, i, goal, chase) {
     const r = mulberry(Math.imul(seed ^ 0x9e3779b9, 2654435761) ^ Math.imul(i + 1, 0x85ebca6b));
     r(); r(); r(); // прогрев генератора
-    const room = { i, locked: i >= 2 && i < goal && r() < 0.3, dark: i >= 4 && r() < 0.35, furn: [], coins: [] };
-    // 10 мест вдоль стен; перемешиваем и раздаём шкафы и ящики
-    const slots = [];
-    for (const side of [-1, 1]) for (const dz of [2.6, 5.2, 7.8, 10.4, 13]) slots.push({ side, dz });
-    for (let k = slots.length - 1; k > 0; k--) {
-      const j = Math.floor(r() * (k + 1));
-      [slots[k], slots[j]] = [slots[j], slots[k]];
-    }
-    const closets = i === 0 ? 1 : 1 + (r() < 0.5 ? 1 : 0);
-    const drawers = i === 0 ? 1 : 2 + Math.floor(r() * 2);
-    for (let k = 0; k < closets; k++) room.furn.push({ type: 'closet', ...slots[k] });
-    for (let k = 0; k < drawers; k++) {
-      room.furn.push({ type: 'drawer', ...slots[closets + k], gold: r() < 0.6 ? 1 + Math.floor(r() * 12) : 0, key: false });
-    }
-    if (room.locked) {
-      const ds = room.furn.filter((f) => f.type === 'drawer');
-      ds[Math.floor(r() * ds.length)].key = true; // ключ всегда лежит в одном из ящиков этой комнаты
+    const inChase = !!chase && i >= chase.from && i <= chase.to;
+    const room = {
+      i, chase: inChase, final: inChase && i === chase.to,
+      locked: !inChase && i >= 2 && i < goal && r() < 0.3, dark: !inChase && i >= 4 && r() < 0.35,
+      furn: [], coins: [], decor: [], obstacles: [],
+    };
+    if (inChase) { // коридор погони: завалы вместо шкафов (спрятаться нельзя)
+      for (let k = 0; k < 3; k++) {
+        room.obstacles.push({ side: k % 2 ? 1 : -1, dz: 3 + k * 4.2 + r() * 1.5, w: 3.4 + r() * 1.4, d: 1.3, h: 1 + r() * 0.8 });
+      }
+    } else {
+      // 10 мест вдоль стен; перемешиваем и раздаём шкафы, комоды и декор
+      const slots = [];
+      for (const side of [-1, 1]) for (const dz of [2.6, 5.2, 7.8, 10.4, 13]) slots.push({ side, dz });
+      for (let k = slots.length - 1; k > 0; k--) {
+        const j = Math.floor(r() * (k + 1));
+        [slots[k], slots[j]] = [slots[j], slots[k]];
+      }
+      const closets = i === 0 ? 1 : 1 + (r() < 0.5 ? 1 : 0);
+      const drawers = i === 0 ? 1 : 2 + Math.floor(r() * 2);
+      for (let k = 0; k < closets; k++) room.furn.push({ type: 'closet', ...slots[k] });
+      for (let k = 0; k < drawers; k++) {
+        room.furn.push({ type: 'drawer', ...slots[closets + k], gold: r() < 0.6 ? 1 + Math.floor(r() * 12) : 0, key: false });
+      }
+      if (room.locked) {
+        const ds = room.furn.filter((f) => f.type === 'drawer');
+        ds[Math.floor(r() * ds.length)].key = true; // ключ всегда лежит в одном из ящиков этой комнаты
+      }
+      for (let k = closets + drawers, n = 0; k < slots.length && n < 3; k++, n++) {
+        const x = r();
+        room.decor.push({ type: x < 0.5 ? 'plant' : x < 0.75 ? 'shelf' : 'table', side: slots[k].side, dz: slots[k].dz, kind: Math.floor(r() * 3) });
+      }
+      for (let k = 0; k < 2; k++) room.decor.push({ type: 'painting', side: r() < 0.5 ? -1 : 1, dz: 2 + r() * 12, kind: Math.floor(r() * 4) });
     }
     const nCoins = Math.floor(r() * 4);
     for (let k = 0; k < nCoins; k++) room.coins.push({ x: (r() - 0.5) * (RW - 3), dz: 2 + r() * (RD - 4), v: 1 + Math.floor(r() * 4) });
@@ -106,9 +122,10 @@
       <p>Кооперативный хоррор по мотивам Roblox DOORS. Все посетители сайта играют в одном забеге: проходите комнату за комнатой,
       открывайте двери и выживайте. Дверь открывается для всех сразу.</p>
       <ul>
-        <li><b>Rush</b> — свет мигает, слышен нарастающий гул. Спрячься в шкафу до того, как он пролетит.</li>
-        <li><b>Ambush</b> — быстрее Rush и проносится по комнатам несколько раз туда-обратно. Выходи из шкафа, только когда стихнет.</li>
-        <li><b>Screech</b> — шепчет «пссст». Успей посмотреть на него, иначе укусит.</li>
+        <li><b>Вихрь</b> — свет мигает, слышен нарастающий гул. Спрячься в шкафу до того, как он пролетит.</li>
+        <li><b>Эхо</b> — быстрее Вихря и проносится по комнатам несколько раз туда-обратно. Выходи из шкафа, только когда стихнет.</li>
+        <li><b>Преследователь</b> — на некоторых этажах в коридоре гаснет свет, по стенам открываются глаза, и по нему идёт нечто. Прятаться нельзя: беги вперёд, огибай завалы и открой дверь <b>0000</b>.</li>
+        <li><b>Шорох</b> — шепчет «пссст». Успей посмотреть на него, иначе укусит.</li>
         <li>Запертая дверь требует <b>ключ</b> — он лежит в одном из ящиков комнаты. С комнаты №5 бывают тёмные комнаты — включай фонарик.</li>
         <li>Пока кто-то жив, забег продолжается; погибшие наблюдают за живыми. Когда погибли все — новый забег.</li>
       </ul>
@@ -150,7 +167,7 @@
     alive: true, hp: 100, gold: 0, hasKey: false, killedBy: '',
     x: 0, z: -3, yaw: 0, pitch: 0, vx: 0, vz: 0, bob: 0, run: false,
     hidden: null, flash: false, ev: null, evSnd: null, screech: null, nextScreech: 0,
-    chatOpen: false, unread: 0, pending: false, lastSend: 0, lastHud: 0, count: 0, msgUntil: 0, deadY: 0,
+    chase: null, chaser: null, chaseSnd: null, chatOpen: false, unread: 0, pending: false, lastSend: 0, lastHud: 0, count: 0, msgUntil: 0, deadY: 0,
   };
   const keys = new Set();
   const touch = { x: 0, y: 0 };
@@ -216,8 +233,9 @@
   function entSound(type) {
     if (!AC) return null;
     const src = AC.createBufferSource(); src.buffer = noise(); src.loop = true;
-    const bp = AC.createBiquadFilter(); bp.type = type === 'rush' ? 'bandpass' : 'highpass'; bp.frequency.value = 400; bp.Q.value = 0.8;
-    const osc = AC.createOscillator(); osc.type = type === 'rush' ? 'sawtooth' : 'square'; osc.frequency.value = type === 'rush' ? 80 : 190;
+    const low = type === 'rush' || type === 'chase';
+    const bp = AC.createBiquadFilter(); bp.type = low ? 'bandpass' : 'highpass'; bp.frequency.value = 400; bp.Q.value = 0.8;
+    const osc = AC.createOscillator(); osc.type = low ? 'sawtooth' : 'square'; osc.frequency.value = type === 'rush' ? 80 : type === 'chase' ? 46 : 190;
     const g = AC.createGain(); g.gain.value = 0;
     src.connect(bp); bp.connect(g); osc.connect(g); g.connect(AC.destination); src.start(); osc.start();
     return {
@@ -243,22 +261,39 @@
     return t;
   }
 
+  // лица существ нарисованы на canvas; все дизайны оригинальные
   function faceTex(kind) {
     return canvasTex(256, 256, (g, w, h) => {
-      const grd = g.createRadialGradient(w / 2, h / 2, 10, w / 2, h / 2, w / 2);
-      if (kind === 'rush') { grd.addColorStop(0, '#222'); grd.addColorStop(0.7, '#0a0a0a'); grd.addColorStop(1, 'rgba(0,0,0,0)'); }
-      else if (kind === 'ambush') { grd.addColorStop(0, '#2f6b47'); grd.addColorStop(0.7, '#10261a'); grd.addColorStop(1, 'rgba(0,0,0,0)'); }
-      else { grd.addColorStop(0, '#111'); grd.addColorStop(1, 'rgba(0,0,0,0)'); }
-      g.fillStyle = grd; g.beginPath(); g.arc(w / 2, h / 2, w / 2, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#fff';
-      g.beginPath(); g.ellipse(88, 100, 22, 30, 0, 0, Math.PI * 2); g.fill();
-      g.beginPath(); g.ellipse(168, 100, 22, 30, 0, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#000';
-      g.beginPath(); g.arc(92, 106, 7, 0, Math.PI * 2); g.fill();
-      g.beginPath(); g.arc(164, 106, 7, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#fff';
-      if (kind === 'ambush') { g.beginPath(); g.ellipse(128, 176, 40, 34, 0, 0, Math.PI * 2); g.fill(); g.fillStyle = '#000'; g.beginPath(); g.ellipse(128, 178, 30, 26, 0, 0, Math.PI * 2); g.fill(); }
-      else { g.beginPath(); g.moveTo(60, 160); g.quadraticCurveTo(128, 240, 196, 160); g.quadraticCurveTo(128, 200, 60, 160); g.fill(); }
+      if (kind === 'rush') { // «Вихрь»: грозовое облако с тремя щелевидными глазами
+        for (let k = 0; k < 9; k++) {
+          const x = 70 + Math.random() * 116, y = 80 + Math.random() * 100, r = 50 + Math.random() * 40;
+          const grd = g.createRadialGradient(x, y, 4, x, y, r);
+          grd.addColorStop(0, 'rgba(26,28,38,.95)'); grd.addColorStop(1, 'rgba(10,10,16,0)');
+          g.fillStyle = grd; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+        }
+        g.fillStyle = '#ffb347';
+        for (const [x, y] of [[88, 110], [128, 96], [168, 110]]) { g.beginPath(); g.ellipse(x, y, 7, 22, 0, 0, Math.PI * 2); g.fill(); }
+      } else if (kind === 'ambush') { // «Эхо»: бледная маска с косыми глазами и зигзагом вместо рта
+        const grd = g.createRadialGradient(128, 128, 20, 128, 128, 120);
+        grd.addColorStop(0, '#9fd6c8'); grd.addColorStop(0.7, '#2c5a56'); grd.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grd; g.beginPath(); g.ellipse(128, 128, 84, 112, 0, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#031210';
+        g.beginPath(); g.moveTo(72, 96); g.lineTo(116, 112); g.lineTo(80, 126); g.fill();
+        g.beginPath(); g.moveTo(184, 96); g.lineTo(140, 112); g.lineTo(176, 126); g.fill();
+        g.strokeStyle = '#031210'; g.lineWidth = 6; g.beginPath(); g.moveTo(84, 176);
+        for (let x = 84; x <= 172; x += 22) g.lineTo(x + 11, (x / 22) % 2 ? 160 : 194);
+        g.stroke();
+      } else { // «Шорох»: маленький колючий шар с красными точками-глазами
+        g.fillStyle = '#0a0a0a';
+        for (let k = 0; k < 14; k++) {
+          const a = (k / 14) * Math.PI * 2;
+          g.beginPath(); g.moveTo(128 + Math.cos(a - 0.12) * 60, 128 + Math.sin(a - 0.12) * 60);
+          g.lineTo(128 + Math.cos(a) * 112, 128 + Math.sin(a) * 112); g.lineTo(128 + Math.cos(a + 0.12) * 60, 128 + Math.sin(a + 0.12) * 60); g.fill();
+        }
+        g.beginPath(); g.arc(128, 128, 66, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#ff2a2a';
+        for (const x of [104, 152]) { g.beginPath(); g.arc(x, 120, 9, 0, Math.PI * 2); g.fill(); }
+      }
     });
   }
 
@@ -268,6 +303,73 @@
       g.fillStyle = fg; g.font = font; g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText(text, w / 2, h / 2);
     });
+  }
+
+  // ---------- материалы и текстуры (рисуются на canvas, файлов нет) ----------
+  function makeMaterials() {
+    const rep = (t) => { t.wrapS = t.wrapT = T.RepeatWrapping; return t; };
+    const L = (o) => new T.MeshLambertMaterial(o);
+    const wallTex = rep(canvasTex(128, 128, (g, w, h) => {
+      g.fillStyle = '#5b4636'; g.fillRect(0, 0, w, h);
+      for (let x = 0; x < w; x += 32) { g.fillStyle = '#6a5240'; g.fillRect(x + 8, 0, 16, h); }
+      g.fillStyle = '#7d634a';
+      for (let x = 16; x < w; x += 32) for (let y = 16; y < h; y += 48) {
+        g.beginPath(); g.moveTo(x, y - 8); g.lineTo(x + 6, y); g.lineTo(x, y + 8); g.lineTo(x - 6, y); g.fill();
+      }
+    }));
+    const woodTex = rep(canvasTex(128, 64, (g, w, h) => {
+      g.fillStyle = '#4a3220'; g.fillRect(0, 0, w, h);
+      for (let k = 0; k < 40; k++) {
+        g.strokeStyle = Math.random() < 0.5 ? 'rgba(0,0,0,.18)' : 'rgba(255,220,170,.07)';
+        g.beginPath(); const y = Math.random() * h; g.moveTo(0, y); g.bezierCurveTo(w / 3, y + 4, 2 * w / 3, y - 4, w, y + 2); g.stroke();
+      }
+    }));
+    const carpetTex = rep(canvasTex(128, 128, (g, w, h) => {
+      g.fillStyle = '#4a1418'; g.fillRect(0, 0, w, h);
+      g.strokeStyle = 'rgba(190,150,70,.5)'; g.lineWidth = 2;
+      for (let o = -h; o < w; o += 32) { g.beginPath(); g.moveTo(o, 0); g.lineTo(o + h, h); g.stroke(); g.beginPath(); g.moveTo(o + h, 0); g.lineTo(o, h); g.stroke(); }
+      g.fillStyle = 'rgba(190,150,70,.6)';
+      for (let x = 16; x < w; x += 32) for (let y = 16; y < h; y += 32) { g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); }
+    }));
+    const runnerTex = rep(canvasTex(128, 256, (g, w, h) => {
+      g.fillStyle = '#7a1c22'; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#c9a24a'; g.fillRect(8, 0, 6, h); g.fillRect(w - 14, 0, 6, h);
+      g.fillStyle = '#2a0b0e'; g.fillRect(18, 0, 4, h); g.fillRect(w - 22, 0, 4, h);
+      g.strokeStyle = '#c9a24a'; g.lineWidth = 3;
+      for (let y = 64; y < h + 64; y += 128) { g.beginPath(); g.ellipse(w / 2, y, 30, 44, 0, 0, Math.PI * 2); g.stroke(); g.beginPath(); g.ellipse(w / 2, y, 14, 22, 0, 0, Math.PI * 2); g.stroke(); }
+    }));
+    const art = (n) => canvasTex(128, 96, (g, w, h) => {
+      const sky = g.createLinearGradient(0, 0, 0, h);
+      if (n === 0) { sky.addColorStop(0, '#34406b'); sky.addColorStop(1, '#d8a060'); } else if (n === 1) { sky.addColorStop(0, '#1a2a2a'); sky.addColorStop(1, '#4a6a50'); } else if (n === 2) { sky.addColorStop(0, '#6a3a3a'); sky.addColorStop(1, '#e0c080'); } else { sky.addColorStop(0, '#222'); sky.addColorStop(1, '#556'); }
+      g.fillStyle = sky; g.fillRect(0, 0, w, h);
+      g.fillStyle = n === 1 ? '#0c1a14' : '#2a1e18';
+      g.beginPath(); g.moveTo(0, h); g.lineTo(0, 64); g.quadraticCurveTo(40, 40, 70, 62); g.quadraticCurveTo(100, 78, w, 56); g.lineTo(w, h); g.fill();
+      g.fillStyle = 'rgba(255,240,200,.85)'; g.beginPath(); g.arc(n % 2 ? 94 : 34, 26, 10, 0, Math.PI * 2); g.fill();
+    });
+    const glowTex = (inner) => canvasTex(64, 64, (g, w, h) => {
+      const grd = g.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
+      grd.addColorStop(0, inner); grd.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = grd; g.fillRect(0, 0, w, h);
+    });
+    const eyeTex = canvasTex(128, 64, (g, w, h) => {
+      g.fillStyle = 'rgba(0,0,0,.0)'; g.clearRect(0, 0, w, h);
+      g.fillStyle = '#e8e4d8'; g.beginPath(); g.ellipse(w / 2, h / 2, 56, 24, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#d2781e'; g.beginPath(); g.arc(w / 2, h / 2, 18, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#000'; g.beginPath(); g.ellipse(w / 2, h / 2, 6, 15, 0, 0, Math.PI * 2); g.fill();
+    });
+    Object.assign(M, {
+      wall: L({ map: wallTex }), wallDark: L({ map: wallTex, color: 0xb06a6a }),
+      wood: L({ map: woodTex }), ceil: L({ map: woodTex, color: 0x777777 }), carpet: L({ map: carpetTex }), runner: L({ map: runnerTex }),
+      trim: L({ color: 0x24160a }), door: L({ map: woodTex, color: 0xc9966a }), doorInset: L({ map: woodTex, color: 0x9a6e48 }),
+      doorFinal: L({ color: 0x241012 }), brass: L({ color: 0xb08a3a }), glass: L({ color: 0xaaccdd, transparent: true, opacity: 0.28 }),
+      cab: L({ map: woodTex, color: 0xa87850 }), cabPanel: L({ map: woodTex, color: 0x7e5634 }), drawerOpen: L({ color: 0x2a1d10 }),
+      pot: L({ color: 0xa0522d }), soil: L({ color: 0x2a1a0f }), leaf: [L({ color: 0x2e6b34 }), L({ color: 0x3c8a40 }), L({ color: 0x245a2c })],
+      lamp: new T.MeshBasicMaterial({ color: 0xffe2a8 }), lampOff: new T.MeshBasicMaterial({ color: 0x2a2418 }),
+      coin: new T.MeshBasicMaterial({ color: 0xffd45a }), redGlow: new T.MeshBasicMaterial({ color: 0xff3b2e }),
+      eye: new T.MeshBasicMaterial({ map: eyeTex, transparent: true, depthWrite: false }),
+      paint: [0, 1, 2, 3].map((n) => new T.MeshBasicMaterial({ map: art(n) })),
+      mist: new T.SpriteMaterial({ map: glowTex('rgba(10,0,16,.9)'), transparent: true, depthWrite: false }),
+    });
+    M.floor = M.carpet; M.frame = M.trim; M.closet = M.cab; M.panel = M.cabPanel; M.drawer = M.cab;
   }
 
   function initGL() {
@@ -287,12 +389,7 @@
     spot = new T.SpotLight(0xfff1c9, 0, 28, 0.5, 0.45, 1.2);
     const tgt = new T.Object3D(); tgt.position.set(0, 0, -5);
     camera.add(spot); camera.add(tgt); spot.target = tgt;
-    const L = (c) => new T.MeshLambertMaterial({ color: c });
-    Object.assign(M, {
-      wall: L(0x5a4632), floor: L(0x3b1616), ceil: L(0x2a2118), door: L(0x7a5230), frame: L(0x24160a),
-      closet: L(0x4e3320), panel: L(0x3a2616), drawer: L(0x6b4a28), drawerOpen: L(0x2a1d10), lamp: new T.MeshBasicMaterial({ color: 0xffe2a8 }),
-      lampOff: new T.MeshBasicMaterial({ color: 0x2a2418 }), coin: new T.MeshBasicMaterial({ color: 0xffd45a }),
-    });
+    makeMaterials();
     resize();
   }
 
@@ -314,39 +411,188 @@
   const aabb = (x, z, w, d) => ({ minx: x - w / 2, maxx: x + w / 2, minz: z - d / 2, maxz: z + d / 2, on: true });
 
   // ---------- комнаты ----------
+  function scaleUV(geo, su, sv) {
+    const uv = geo.attributes.uv;
+    for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * su, uv.getY(k) * sv);
+  }
+  function tbox(parent, w, h, d, x, y, z, mat, su, sv) { // коробка с повторяющейся текстурой
+    const geo = new T.BoxGeometry(w, h, d);
+    if (su) scaleUV(geo, su, sv);
+    const m = new T.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    parent.add(m);
+    return m;
+  }
+
+  // горшок с растением: куст-шар, папоротник или высокое растение
+  function plant(g, x, z, kind, rv, R) {
+    const pot = new T.Mesh(new T.CylinderGeometry(0.34, 0.25, 0.5, 14), M.pot); pot.position.set(x, 0.25, z); g.add(pot);
+    const rim = new T.Mesh(new T.CylinderGeometry(0.38, 0.38, 0.07, 14), M.pot); rim.position.set(x, 0.52, z); g.add(rim);
+    const soil = new T.Mesh(new T.CylinderGeometry(0.33, 0.33, 0.04, 14), M.soil); soil.position.set(x, 0.55, z); g.add(soil);
+    if (kind === 0) {
+      for (let k = 0; k < 6; k++) {
+        const a = rv() * 6.28, rr = rv() * 0.22;
+        const b = new T.Mesh(new T.SphereGeometry(0.26 + rv() * 0.16, 9, 7), M.leaf[k % 3]);
+        b.position.set(x + Math.cos(a) * rr, 0.85 + rv() * 0.45, z + Math.sin(a) * rr); g.add(b);
+      }
+    } else if (kind === 1) {
+      for (let k = 0; k < 9; k++) {
+        const a = (k / 9) * 6.28 + rv() * 0.4, piv = new T.Group();
+        piv.position.set(x, 0.56, z); piv.rotation.set(Math.cos(a) * 0.6, 0, -Math.sin(a) * 0.6);
+        const c = new T.Mesh(new T.ConeGeometry(0.11, 1.0, 5), M.leaf[k % 3]); c.position.y = 0.5; piv.add(c); g.add(piv);
+      }
+    } else {
+      const st = new T.Mesh(new T.CylinderGeometry(0.04, 0.05, 1.2, 6), M.soil); st.position.set(x, 1.15, z); g.add(st);
+      for (let k = 0; k < 4; k++) {
+        const b = new T.Mesh(new T.SphereGeometry(0.3 - k * 0.03, 9, 7), M.leaf[k % 3]);
+        b.position.set(x + (rv() - 0.5) * 0.25, 1.5 + k * 0.28, z + (rv() - 0.5) * 0.25); g.add(b);
+      }
+    }
+    R.colliders.push(aabb(x, z, 0.7, 0.7));
+  }
+
+  // декоративный шкаф: двери с филёнками, карниз, ножки; перед направлен в +x (затем поворачивается)
+  function wardrobe(g, wx, wz, side) {
+    const w = new T.Group(); w.position.set(wx, 0, wz); w.rotation.y = side < 0 ? 0 : Math.PI; g.add(w);
+    const add = (geo, mat, x, y, z) => { const m = new T.Mesh(geo, mat); m.position.set(x, y, z); w.add(m); return m; };
+    add(new T.BoxGeometry(1.1, 2.5, 1.6), M.cab, 0, 1.35, 0);
+    add(new T.BoxGeometry(1.2, 0.16, 1.7), M.cabPanel, 0, 2.68, 0);
+    for (const sz of [-1, 1]) {
+      add(new T.BoxGeometry(0.04, 2.25, 0.74), M.cabPanel, 0.56, 1.35, sz * 0.4);
+      add(new T.BoxGeometry(0.05, 0.9, 0.5), M.cab, 0.58, 1.9, sz * 0.4);
+      add(new T.BoxGeometry(0.05, 0.9, 0.5), M.cab, 0.58, 0.8, sz * 0.4);
+      add(new T.BoxGeometry(0.07, 0.22, 0.05), M.brass, 0.6, 1.3, sz * 0.1);
+      add(new T.BoxGeometry(0.1, 0.1, 0.1), M.cabPanel, 0.45, 0.1, sz * 0.65);
+    }
+  }
+
+  // комод с выдвижным ящиком, вазой и цветами сверху
+  function dresser(g, wx, wz, side, rv) {
+    const w = new T.Group(); w.position.set(wx, 0, wz); w.rotation.y = side < 0 ? 0 : Math.PI; g.add(w);
+    const add = (geo, mat, x, y, z) => { const m = new T.Mesh(geo, mat); m.position.set(x, y, z); w.add(m); return m; };
+    add(new T.BoxGeometry(0.7, 0.98, 1.4), M.cab, 0, 0.49, 0);
+    add(new T.BoxGeometry(0.78, 0.06, 1.5), M.cabPanel, 0, 1.01, 0);
+    let top = null;
+    [0.8, 0.5, 0.2].forEach((y, k) => {
+      const f = add(new T.BoxGeometry(0.04, 0.26, 1.3), M.cabPanel, 0.36, y, 0);
+      add(new T.BoxGeometry(0.06, 0.06, 0.14), M.brass, 0.4, y, 0);
+      if (k === 0) top = f;
+    });
+    add(new T.CylinderGeometry(0.1, 0.07, 0.28, 10), M.glass, 0, 1.18, 0.3);
+    for (let k = 0; k < 4; k++) add(new T.SphereGeometry(0.07, 6, 5), M.leaf[k % 3], (rv() - 0.5) * 0.12, 1.36 + rv() * 0.1, 0.3 + (rv() - 0.5) * 0.12);
+    return top;
+  }
+
+  function shelf(g, wx, wz, side, rv, R) {
+    const w = new T.Group(); w.position.set(wx, 0, wz); w.rotation.y = side < 0 ? 0 : Math.PI; g.add(w);
+    const add = (geo, mat, x, y, z) => { const m = new T.Mesh(geo, mat); m.position.set(x, y, z); w.add(m); return m; };
+    add(new T.BoxGeometry(0.06, 2.4, 2.0), M.cabPanel, -0.22, 1.2, 0);
+    for (const sz of [-1, 1]) add(new T.BoxGeometry(0.5, 2.4, 0.06), M.cab, 0, 1.2, sz * 0.97);
+    const rows = [0.15, 0.7, 1.25, 1.8, 2.37];
+    rows.forEach((y) => add(new T.BoxGeometry(0.5, 0.05, 2.0), M.cab, 0, y, 0));
+    const inst = new T.InstancedMesh(new T.BoxGeometry(0.28, 0.3, 0.07), new T.MeshLambertMaterial({ color: 0xffffff }), 52);
+    const pal = [0x7a2a2a, 0x2a4a7a, 0x3a6a3a, 0x8a6a2a, 0x5a3a6a, 0x2a2a2a, 0x7a5a3a];
+    const dum = new T.Object3D(), col = new T.Color();
+    let n = 0;
+    for (let rI = 0; rI < 4; rI++) {
+      let zz = -0.88;
+      for (let k = 0; k < 13 && n < 52; k++, n++) {
+        const th = 0.5 + rv() * 0.7, h = 0.85 + rv() * 0.3;
+        dum.position.set(0.02, rows[rI] + 0.025 + 0.15 * h, zz + 0.035 * th);
+        dum.scale.set(1, h, th); dum.updateMatrix(); inst.setMatrixAt(n, dum.matrix);
+        inst.setColorAt(n, col.setHex(pal[Math.floor(rv() * pal.length)]));
+        zz += 0.07 * th + 0.01;
+      }
+    }
+    inst.count = n; w.add(inst);
+    R.colliders.push(aabb(wx, wz, 0.5, 2.0));
+  }
+
+  function sideTable(g, wx, wz, rv, R) {
+    const add = (geo, mat, x, y, z) => { const m = new T.Mesh(geo, mat); m.position.set(x, y, z); g.add(m); return m; };
+    add(new T.BoxGeometry(0.7, 0.06, 1.2), M.cab, wx, 0.8, wz);
+    for (const dx of [-0.28, 0.28]) for (const dz of [-0.5, 0.5]) add(new T.BoxGeometry(0.07, 0.78, 0.07), M.cabPanel, wx + dx, 0.39, wz + dz);
+    add(new T.CylinderGeometry(0.09, 0.12, 0.3, 10), M.glass, wx, 0.98, wz + 0.15);
+    for (let k = 0; k < 3; k++) add(new T.SphereGeometry(0.07, 6, 5), M.leaf[k], wx + (rv() - 0.5) * 0.1, 1.2 + rv() * 0.08, wz + 0.15 + (rv() - 0.5) * 0.1);
+    R.colliders.push(aabb(wx, wz, 0.7, 1.2));
+  }
+
+  function painting(g, side, z, kind) {
+    const gr = new T.Group(); gr.position.set(side * (RW / 2 - 0.06), 2.2, z); gr.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2; g.add(gr);
+    const fr = new T.Mesh(new T.BoxGeometry(1.3, 1.0, 0.06), M.brass); gr.add(fr);
+    const pl = new T.Mesh(new T.PlaneGeometry(1.16, 0.88), M.paint[kind]); pl.position.z = 0.035; gr.add(pl);
+  }
+
+  function sconce(g, R, side, z) {
+    const base = new T.Mesh(new T.BoxGeometry(0.06, 0.34, 0.2), M.brass); base.position.set(side * (RW / 2 - 0.05), 2.3, z); g.add(base);
+    const sh = new T.Mesh(new T.CylinderGeometry(0.07, 0.13, 0.24, 8), M.lamp); sh.position.set(side * (RW / 2 - 0.2), 2.5, z); g.add(sh);
+    R.lampMeshes.push(sh);
+  }
+
+  function chandelier(g, R, zc) {
+    const ch = new T.Mesh(new T.CylinderGeometry(0.02, 0.02, 0.5, 5), M.brass); ch.position.set(0, RH - 0.25, zc); g.add(ch);
+    const ring = new T.Mesh(new T.TorusGeometry(0.42, 0.03, 6, 18), M.brass); ring.rotation.x = Math.PI / 2; ring.position.set(0, RH - 0.55, zc); g.add(ring);
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * 6.28, b = new T.Mesh(new T.SphereGeometry(0.075, 7, 6), M.lamp);
+      b.position.set(Math.cos(a) * 0.42, RH - 0.5, zc + Math.sin(a) * 0.42); g.add(b); R.lampMeshes.push(b);
+    }
+  }
+
+  // ---------- комнаты ----------
   function buildRoom(i) {
     if (S.rooms.has(i)) return;
-    const R = genRoom(S.seed, i, S.goal);
+    const R = genRoom(S.seed, i, S.goal, S.chase);
     const g = new T.Group();
-    R.group = g; R.colliders = []; R.inter = []; R.coinMeshes = [];
+    R.group = g; R.colliders = []; R.inter = []; R.lampMeshes = [];
     const z0 = -i * RD, z1 = -(i + 1) * RD, zc = (z0 + z1) / 2;
     R.z0 = z0; R.z1 = z1;
-    box(g, RW, 0.2, RD, 0, -0.1, zc, M.floor);
-    box(g, RW, 0.2, RD, 0, RH + 0.1, zc, M.ceil);
+    const rv = mulberry(S.seed + i * 131 + 7); // детали декора одинаковы у всех игроков
+    const wallMat = R.chase ? M.wallDark : M.wall;
+
+    // пол с ковром и дорожкой, потолок с балками
+    tbox(g, RW, 0.2, RD, 0, -0.1, zc, M.carpet, RW / 3, RD / 3);
+    tbox(g, 3.4, 0.03, RD - 0.2, 0, 0.012, zc, M.runner, 1, RD / 4);
+    tbox(g, RW, 0.2, RD, 0, RH + 0.1, zc, M.ceil, RW / 3, RD / 3);
+    for (let k = 0; k < 4; k++) box(g, RW, 0.22, 0.28, 0, RH - 0.11, z0 - 2 - k * 4, M.wood);
+
+    // боковые стены: обои, деревянные панели, плинтус и карниз
     for (const s of [-1, 1]) {
-      box(g, 0.3, RH, RD, s * (RW / 2 + 0.15), RH / 2, zc, M.wall);
+      tbox(g, 0.3, RH, RD, s * (RW / 2 + 0.15), RH / 2, zc, wallMat, RD / 3, RH / 3);
       R.colliders.push({ minx: s < 0 ? -RW / 2 - 0.3 : RW / 2, maxx: s < 0 ? -RW / 2 : RW / 2 + 0.3, minz: z1, maxz: z0, on: true });
+      tbox(g, 0.08, 1.1, RD, s * (RW / 2 - 0.04), 0.55, zc, M.wood, RD / 2, 1);
+      box(g, 0.12, 0.08, RD, s * (RW / 2 - 0.06), 1.12, zc, M.trim);
+      box(g, 0.1, 0.18, RD, s * (RW / 2 - 0.05), 0.09, zc, M.trim);
+      box(g, 0.14, 0.14, RD, s * (RW / 2 - 0.07), RH - 0.07, zc, M.trim);
     }
     if (i === 0) {
-      box(g, RW, RH, 0.3, 0, RH / 2, z0 + 0.15, M.wall);
+      tbox(g, RW, RH, 0.3, 0, RH / 2, z0 + 0.15, wallMat, RW / 3, RH / 3);
       R.colliders.push({ minx: -RW / 2, maxx: RW / 2, minz: z0, maxz: z0 + 0.3, on: true });
     }
+
     // торцевая стена с проёмом под дверь
     const gap = 2.4, side = (RW - gap) / 2;
     for (const s of [-1, 1]) {
       const cx = s * (gap / 2 + side / 2);
-      box(g, side, RH, 0.3, cx, RH / 2, z1, M.wall);
+      tbox(g, side, RH, 0.3, cx, RH / 2, z1, wallMat, side / 3, RH / 3);
       R.colliders.push({ minx: cx - side / 2, maxx: cx + side / 2, minz: z1 - 0.15, maxz: z1 + 0.15, on: true });
     }
-    box(g, gap, RH - 3, 0.3, 0, 3 + (RH - 3) / 2, z1, M.wall);
-    box(g, 0.15, 3, 0.35, -gap / 2 + 0.07, 1.5, z1, M.frame);
-    box(g, 0.15, 3, 0.35, gap / 2 - 0.07, 1.5, z1, M.frame);
-    // дверь на петлях слева
+    tbox(g, gap, RH - 3, 0.3, 0, 3 + (RH - 3) / 2, z1, wallMat, 1, 0.4);
+    const fm = R.final ? M.redGlow : M.trim;
+    box(g, 0.15, 3.05, 0.36, -gap / 2 + 0.07, 1.52, z1, fm);
+    box(g, 0.15, 3.05, 0.36, gap / 2 - 0.07, 1.52, z1, fm);
+    box(g, gap, 0.15, 0.36, 0, 3.05, z1, fm);
+
+    // дверь на петлях: филёнки, ручки, табличка с номером (у финальной двери коридора — «0000»)
     const hinge = new T.Group();
     hinge.position.set(-1.1, 0, z1);
-    box(hinge, 2.2, 3, 0.15, 1.1, 1.5, 0, M.door);
-    const label = new T.Mesh(new T.PlaneGeometry(0.95, 0.5), new T.MeshBasicMaterial({ map: textTex(pad4(i + 1), 256, 128, 'bold 78px serif', '#24160a', '#e8d9a8') }));
-    label.position.set(1.1, 2.45, 0.09); label.userData.own = true;
+    box(hinge, 2.2, 3, 0.15, 1.1, 1.5, 0, R.final ? M.doorFinal : M.door);
+    for (const [px, py, pw, ph] of [[0.6, 2.2, 0.7, 0.5], [1.6, 2.2, 0.7, 0.5], [0.6, 0.9, 0.7, 1.0], [1.6, 0.9, 0.7, 1.0]]) {
+      box(hinge, pw, ph, 0.04, px + 0.0, py, 0.09, R.final ? M.trim : M.doorInset);
+      box(hinge, pw, ph, 0.04, px + 0.0, py, -0.09, R.final ? M.trim : M.doorInset);
+    }
+    for (const zz of [0.12, -0.12]) { const k = new T.Mesh(new T.SphereGeometry(0.07, 8, 6), M.brass); k.position.set(1.95, 1.4, zz); hinge.add(k); }
+    const label = new T.Mesh(new T.PlaneGeometry(0.95, 0.5), new T.MeshBasicMaterial({ map: textTex(R.final ? '0000' : pad4(i + 1), 256, 128, 'bold 78px serif', R.final ? '#300808' : '#24160a', R.final ? '#ff6a5a' : '#e8d9a8') }));
+    label.position.set(1.1, 2.45, 0.12); label.userData.own = true;
     hinge.add(label);
     g.add(hinge);
     R.hinge = hinge;
@@ -356,34 +602,61 @@
     R.doorAngle = hinge.rotation.y;
     R.inter.push({ type: 'door', x: 0, z: z1, reach: 2.8, R });
 
-    // мебель
-    R.furn.forEach((f, idx) => {
+    // шкафы и комоды (интерактивные)
+    R.furn.forEach((f) => {
       const wx = f.side * (RW / 2 - (f.type === 'closet' ? 0.55 : 0.35));
       const wz = z0 - f.dz;
       if (f.type === 'closet') {
-        box(g, 1.1, 2.6, 1.6, wx, 1.3, wz, M.closet);
-        box(g, 0.05, 2.4, 1.4, wx - f.side * 0.56, 1.3, wz, M.panel);
+        wardrobe(g, wx, wz, f.side);
         R.colliders.push(aabb(wx, wz, 1.1, 1.6));
         R.inter.push({ type: 'closet', x: wx, z: wz, reach: 2.1, R, f, ex: wx - f.side * 1.3, ez: wz, face: -f.side });
       } else {
-        const m = box(g, 0.7, 1.0, 1.4, wx, 0.5, wz, M.drawer);
-        box(g, 0.05, 0.1, 0.4, wx - f.side * 0.36, 0.7, wz, M.frame);
+        const m = dresser(g, wx, wz, f.side, rv);
         R.colliders.push(aabb(wx, wz, 0.7, 1.4));
         R.inter.push({ type: 'drawer', x: wx, z: wz, reach: 2.0, R, f, mesh: m, done: false });
       }
     });
+
+    // декор: растения, книжные полки, столики, картины
+    for (const d of R.decor) {
+      const wz = z0 - d.dz;
+      if (d.type === 'plant') plant(g, d.side * (RW / 2 - 0.5), wz, d.kind, rv, R);
+      else if (d.type === 'shelf') shelf(g, d.side * (RW / 2 - 0.3), wz, d.side, rv, R);
+      else if (d.type === 'table') sideTable(g, d.side * (RW / 2 - 0.45), wz, rv, R);
+      else painting(g, d.side, wz, d.kind);
+    }
+
+    // завалы в коридоре погони и глаза на стенах
+    for (const o of R.obstacles) {
+      const ox = o.side * (RW / 2 - o.w / 2), wz = z0 - o.dz;
+      const m = box(g, o.w, o.h, o.d, ox, o.h / 2, wz, M.cabPanel);
+      m.rotation.z = (rv() - 0.5) * 0.12;
+      box(g, o.w * 0.9, 0.1, o.d + 0.3, ox, o.h + 0.05, wz, M.cab).rotation.y = (rv() - 0.5) * 0.3;
+      R.colliders.push(aabb(ox, wz, o.w, o.d));
+    }
+    if (R.chase) {
+      for (let k = 0; k < 14; k++) {
+        const s = rv() < 0.5 ? -1 : 1, e = new T.Mesh(new T.PlaneGeometry(0.55, 0.28), M.eye);
+        e.position.set(s * (RW / 2 - 0.12), 1 + rv() * 2.4, z0 - 1 - rv() * (RD - 2));
+        e.rotation.y = s < 0 ? Math.PI / 2 : -Math.PI / 2;
+        g.add(e);
+      }
+    }
+
     // монеты
     R.coins.forEach((c) => {
       const m = new T.Mesh(new T.CylinderGeometry(0.16, 0.16, 0.04, 14), M.coin);
       m.rotation.x = Math.PI / 2; m.position.set(c.x, 0.5, z0 - c.dz);
       g.add(m); c.mesh = m; c.taken = false; c.wz = z0 - c.dz;
     });
-    // свет
+
+    // свет: бра, люстра, точечный источник (в коридоре погони — красноватый)
+    sconce(g, R, -1, z0 - 4); sconce(g, R, 1, z0 - 4); sconce(g, R, -1, z0 - 12); sconce(g, R, 1, z0 - 12);
+    chandelier(g, R, zc);
     const lit = !R.dark;
-    box(g, 0.5, 0.12, 0.5, 0, RH - 0.06, zc, lit ? M.lamp : M.lampOff);
-    R.base = lit ? 0.95 : 0;
-    R.lamp = new T.PointLight(0xffd9a0, R.base, 20, 1.6);
-    R.lamp.position.set(0, RH - 0.4, zc);
+    R.base = lit ? (R.chase ? 0.75 : 0.95) : 0;
+    R.lamp = new T.PointLight(R.chase ? 0xff6a3a : 0xffd9a0, R.base, 20, 1.6);
+    R.lamp.position.set(0, RH - 0.5, zc);
     g.add(R.lamp);
     R.broken = S.broken.has(i);
     scene.add(g);
@@ -396,6 +669,7 @@
     scene.remove(R.group);
     R.group.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
+      if (o.isInstancedMesh) { o.material.dispose(); o.dispose(); }
       if (o.userData.own) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
     });
     S.rooms.delete(i);
@@ -522,13 +796,14 @@
       Net.send({ type: 'd_open', room: it.R.i });
       setTimeout(() => { S.pending = false; }, 1500);
     } else if (it.type === 'closet') {
+      if (S.chase && !S.chase.ended) return say('Здесь не спрячешься!');
       S.hidden = it; S.vx = S.vz = 0;
       S.x = it.x; S.z = it.z;
       S.yaw = it.face > 0 ? -Math.PI / 2 : Math.PI / 2; S.pitch = 0;
       $('drHide').hidden = false;
       sfx.hide();
     } else if (it.type === 'drawer') {
-      it.done = true; it.mesh.material = M.drawerOpen; sfx.drawer();
+      it.done = true; it.mesh.material = M.drawerOpen; it.mesh.position.x += 0.2; sfx.drawer();
       if (it.f.key) { S.hasKey = true; sfx.key(); say('Ты нашёл ключ!'); }
       else if (it.f.gold) { S.gold += it.f.gold; sfx.coin(); say(`+${it.f.gold} золота`); }
       else say('Пусто');
@@ -542,6 +817,64 @@
     if (it.type === 'door') return it.R.locked && it.R.f_locked !== false && !S.hasKey ? 'Дверь заперта — нужен ключ' : 'E — открыть дверь';
     if (it.type === 'closet') return 'E — спрятаться';
     return 'E — обыскать';
+  }
+
+  // ---------- погоня: оригинальное существо-преследователь и дверь «0000» ----------
+  function makeChaser() {
+    const g = new T.Group();
+    const dark = new T.MeshLambertMaterial({ color: 0x15091f }), glow = new T.MeshBasicMaterial({ color: 0xffb040 });
+    const add = (geo, mat, x, y, z) => { const m = new T.Mesh(geo, mat); m.position.set(x, y, z); g.add(m); return m; };
+    const body = add(new T.SphereGeometry(0.8, 14, 10), dark, 0, 1.0, 0); body.scale.set(1, 0.75, 1.7);
+    const neck = add(new T.CylinderGeometry(0.2, 0.34, 0.9, 8), dark, 0, 1.55, -0.95); neck.rotation.x = 0.5;
+    const head = add(new T.SphereGeometry(0.5, 12, 10), dark, 0, 2.0, -1.3); head.scale.set(1, 0.9, 1.1);
+    for (const [x, y] of [[-0.22, 2.04], [0.22, 2.04], [0, 2.26]]) add(new T.SphereGeometry(0.09, 8, 6), glow, x, y, -1.75);
+    for (let k = -2; k <= 2; k++) add(new T.ConeGeometry(0.04, 0.16, 4), new T.MeshBasicMaterial({ color: 0xdddddd }), k * 0.1, 1.78, -1.78).rotation.x = Math.PI;
+    const legs = [];
+    for (let k = 0; k < 8; k++) {
+      const sd = k % 2 ? 1 : -1, row = k >> 1;
+      const piv = new T.Group(); piv.position.set(sd * 0.6, 1.0, -0.7 + row * 0.6);
+      const leg = new T.Mesh(new T.CylinderGeometry(0.05, 0.03, 1.7, 5), dark); leg.position.set(sd * 0.55, -0.55, 0); leg.rotation.z = sd * 0.65;
+      piv.add(leg); g.add(piv); legs.push(piv);
+    }
+    const mist = [];
+    for (let k = 0; k < 6; k++) { const sp = new T.Sprite(M.mist); sp.scale.set(2.4, 2.4, 1); g.add(sp); mist.push(sp); }
+    return { g, legs, mist, head };
+  }
+
+  function clearChaser() {
+    if (S.chaser) { scene.remove(S.chaser.g); S.chaser = null; }
+    if (S.chaseSnd) { S.chaseSnd.stop(); S.chaseSnd = null; }
+  }
+
+  function startChase(c) {
+    endEvent();
+    S.chase = { ...c, ended: false };
+    if (S.hidden && S.hidden.R.i >= c.from && S.hidden.R.i <= c.to) { // шкаф исчезнет вместе с комнатой
+      S.x = S.hidden.ex; S.z = S.hidden.ez; S.hidden = null; $('drHide').hidden = true;
+    }
+    for (const i of [...S.rooms.keys()]) if (i >= c.from && i <= c.to) unbuildRoom(i);
+    syncRooms(curRoom(S.z));
+    say('Свет мигает… Что-то идёт по коридору! Беги к двери 0000!', 6000);
+  }
+
+  function updateChase(dt, now) {
+    const c = S.chase;
+    if (!c || c.ended || !S.on) { if (S.chaser) clearChaser(); return false; }
+    if (!S.chaser) { S.chaser = makeChaser(); scene.add(S.chaser.g); S.chaseSnd = entSound('chase'); S.chaser.x = 0; }
+    const K = S.chaser, t = serverNow(), el = (t - c.t0) / 1000;
+    const zEnd = -(c.to + 1) * RD + 1.6;
+    const z = el < 0 ? c.z0 : Math.max(zEnd, c.z0 - c.speed * el);
+    // чуть смещаемся к ближайшему игроку
+    const tx = clamp(S.x, -3.5, 3.5);
+    K.x += (tx - K.x) * Math.min(1, dt * 1.5);
+    K.g.position.set(K.x, Math.abs(Math.sin(now / 90)) * 0.08, z);
+    K.g.visible = el > -3;
+    K.legs.forEach((p, k) => { p.rotation.x = Math.sin(now / 70 + k * 1.3) * 0.5; });
+    K.mist.forEach((sp, k) => { sp.position.set((Math.random() - 0.5) * 1.6, 0.6 + Math.random() * 1.4, 1 + k * 0.5); sp.material.opacity = 0.4; });
+    const dist = Math.hypot(K.x - S.x, z - S.z);
+    if (S.chaseSnd) S.chaseSnd.set(el < 0 ? 0.12 : clamp(1.1 - dist / 40, 0.12, 1), 180 + 500 * clamp(1 - dist / 40, 0, 1));
+    if (el >= 0 && S.alive && !S.over && dist < 1.9) die('Преследователь');
+    return el < 0;
   }
 
   // ---------- сущности ----------
@@ -587,7 +920,7 @@
           if (st.z < R.z0 && st.z > R.z1 && !R.broken) { R.broken = true; S.broken.add(R.i); }
         }
       }
-      if (S.alive && !S.hidden && !S.over && dist < 2.2) die(ev.type === 'rush' ? 'Rush' : 'Ambush');
+      if (S.alive && !S.hidden && !S.over && dist < 2.2) die(ev.type === 'rush' ? 'Вихрь' : 'Эхо');
     }
     return flick;
   }
@@ -629,8 +962,8 @@
     const dx = sc.sp.position.x - S.x, dz = sc.sp.position.z - S.z, d = Math.hypot(dx, dz) || 1;
     const dot = (dx * -Math.sin(S.yaw) + dz * -Math.cos(S.yaw)) / d;
     if (dot > 0.93) sc.look += dt; else sc.look = Math.max(0, sc.look - dt);
-    if (sc.look > 0.25) { scene.remove(sc.sp); S.screech = null; sfx.screech(); say('Ты отогнал Screech'); }
-    else if (sc.t > 1.9) { scene.remove(sc.sp); S.screech = null; sfx.screech(); damage(25, 'Screech'); say('Screech укусил тебя!'); }
+    if (sc.look > 0.25) { scene.remove(sc.sp); S.screech = null; sfx.screech(); say('Ты отогнал Шороха'); }
+    else if (sc.t > 1.9) { scene.remove(sc.sp); S.screech = null; sfx.screech(); damage(25, 'Шорох'); say('Шорох укусил тебя!'); }
   }
 
   // ---------- кадр ----------
@@ -658,11 +991,16 @@
     }
 
     syncRooms(curRoom(cz));
-    const flick = updateEvent();
+    const flickEv = updateEvent();
+    const flickCh = updateChase(dt, now);
+    const flick = flickEv || flickCh;
     updateScreech(dt, now);
 
     for (const R of S.rooms.values()) {
-      R.lamp.intensity = R.broken ? 0 : R.base * (flick ? (Math.random() < 0.5 ? 0.12 : 1) : 1);
+      const dim = flick && Math.random() < 0.5;
+      R.lamp.intensity = R.broken ? 0 : R.base * (dim ? 0.12 : 1);
+      const lampOn = !R.broken && R.base > 0 && !dim;
+      for (const lm of R.lampMeshes) lm.material = lampOn ? M.lamp : M.lampOff;
       R.doorAngle += ((R.i < S.front ? 1.5 : 0) - R.doorAngle) * Math.min(1, dt * 3);
       R.hinge.rotation.y = R.doorAngle;
     }
@@ -735,6 +1073,8 @@
     if (S.screech) { scene.remove(S.screech.sp); S.screech = null; }
     for (const o of S.peers.values()) scene.remove(o.grp);
     S.peers.clear(); S.broken.clear();
+    clearChaser();
+    S.chase = m.chase ? { ...m.chase, ended: false } : null;
     S.seed = m.seed; S.front = m.front; S.goal = m.goal || 100;
     S.skew = m.now - Date.now();
     S.alive = true; S.hp = 100; S.hasKey = false; S.gold = 0; S.hidden = null; S.over = !!m.over;
@@ -746,7 +1086,7 @@
     $('drMsg').textContent = '';
     syncRooms(curRoom(S.z));
     S.ready = true;
-    say(S.front ? `Ты присоединился к забегу (комната ${S.front})` : 'Найди дверь в конце комнаты. Помни: от Rush и Ambush прячься в шкафу!', 5000);
+    say(S.front ? `Ты присоединился к забегу (комната ${S.front})` : 'Найди дверь в конце комнаты. Помни: от Вихря и Эха прячься в шкафу!', 5000);
   }
 
   function onMessage(m) {
@@ -770,11 +1110,15 @@
         break;
       case 'd_front':
         if (!S.ready) break;
+        for (let k = S.front; k < m.front; k++) openDoorLocal(k);
         S.front = m.front; S.pending = false;
-        openDoorLocal(m.front - 1);
         syncRooms(curRoom(S.z));
         sfx.door();
         say(`Дверь ${pad4(m.front)} открыта`);
+        break;
+      case 'd_chase': if (S.ready && S.on) startChase(m.chase); break;
+      case 'd_chase_end':
+        if (S.chase && !S.chase.ended) { S.chase.ended = true; sfx.door(); say('Дверь 0000 открыта. Погоня окончена!', 4000); }
         break;
       case 'd_peers': if (S.ready && S.on) updatePeers(m.list); break;
       case 'd_event':
@@ -813,6 +1157,7 @@
     if (!S.on) return;
     S.on = false; S.ready = false;
     closeChat();
+    clearChaser();
     Net.send({ type: 'd_leave' });
     cancelAnimationFrame(rafId);
     if (document.pointerLockElement) document.exitPointerLock();
@@ -934,6 +1279,14 @@
     onMessage,
     onShow() { Net.send({ type: 'd_peek' }); },
     onHide() { leave(); },
-    _test: { evState, genRoom, mulberry },
+    _test: {
+      evState, genRoom, mulberry,
+      smoke(fakeT, msg) { // прогон построения комнат и кадра с подставным three.js (для проверки без браузера)
+        T = fakeT; initGL(); S.on = true;
+        resetRun(msg);
+        for (let k = 0; k < 3; k++) frame(1000 + k * 16);
+        return { rooms: [...S.rooms.keys()], chase: !!S.chase, chaser: !!S.chaser };
+      },
+    },
   };
 })();

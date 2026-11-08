@@ -370,13 +370,16 @@ function handleGame(ws, m, now) {
 // ---------- DOORS: общий кооперативный забег ----------
 const D_ROOM = 16; // глубина комнаты (одинаковая у всех, клиенты строят комнаты по seed)
 const D_GOAL = 100; // сколько дверей нужно открыть для победы
-const doors = { seed: 1, front: 0, players: new Set(), nextEvent: 0, over: false, evId: 0, timer: null };
+const CHASE_AT = [12, 28, 45, 65, 85]; // после открытия этих дверей начинается погоня
+const CHASE_LEN = 5; // сколько комнат в коридоре погони (последняя дверь — «0000»)
+const doors = { seed: 1, front: 0, players: new Set(), nextEvent: 0, over: false, evId: 0, timer: null, chase: null };
 
 const freshD = () => ({ x: (Math.random() - 0.5) * 4, z: -(doors.front * D_ROOM) - 3, ry: 0, hid: false, alive: true });
 
 function doorsNewRun() {
   doors.seed = crypto.randomInt(1, 2 ** 31 - 1);
   doors.front = 0;
+  doors.chase = null;
   doors.over = false;
   doors.nextEvent = Date.now() + 20000;
   for (const p of doors.players) p.d = freshD();
@@ -387,7 +390,7 @@ function doorsCount() {
 }
 
 function doorsStartMsg(p) {
-  return { type: 'd_start', seed: doors.seed, front: doors.front, goal: D_GOAL, now: Date.now(), spawn: { x: p.d.x, z: p.d.z } };
+  return { type: 'd_start', seed: doors.seed, front: doors.front, goal: D_GOAL, now: Date.now(), spawn: { x: p.d.x, z: p.d.z }, chase: doors.chase };
 }
 
 function doorsRestart() {
@@ -454,7 +457,7 @@ setInterval(() => {
 // сущности появляются по таймеру, пока в забеге есть живые игроки
 setInterval(() => {
   const now = Date.now();
-  if (!doors.players.size || doors.over || doors.front < 1 || now < doors.nextEvent) return;
+  if (!doors.players.size || doors.over || doors.chase || doors.front < 1 || now < doors.nextEvent) return;
   doorsSpawnEvent(now);
   const k = Math.max(0.4, 1 - doors.front / 150); // чем глубже, тем чаще
   doors.nextEvent = now + (22000 + Math.random() * 26000) * k;
@@ -494,8 +497,23 @@ function handleDoors(ws, m) {
     case 'd_open': {
       if (!ws.d || !ws.d.alive || doors.over) return true;
       if (Math.floor(Number(m.room)) !== doors.front) return true;
+      if (doors.chase && doors.front === doors.chase.to) { // открыта дверь «0000» — погоня закончилась
+        doors.chase = null;
+        broadcastTo(doors.players, { type: 'd_chase_end' });
+      }
       doors.front++;
+      let chase = null;
+      if (!doors.chase && CHASE_AT.includes(doors.front) && doors.front + CHASE_LEN < D_GOAL) {
+        const from = doors.front, alive = [...doors.players].filter((p) => p.d.alive);
+        doors.front = from + CHASE_LEN - 1; // все двери коридора открыты, закрыта только последняя
+        chase = {
+          id: ++doors.evId, from, to: doors.front, t0: Date.now() + 6000, speed: 6.2,
+          z0: Math.max(-from * D_ROOM, ...alive.map((p) => p.d.z)) + 24, // старт позади самого дальнего игрока
+        };
+        doors.chase = chase;
+      }
       broadcastTo(doors.players, { type: 'd_front', front: doors.front });
+      if (chase) broadcastTo(doors.players, { type: 'd_chase', chase });
       doorsCount();
       if (doors.front >= D_GOAL) doorsEnd('d_win');
       return true;
