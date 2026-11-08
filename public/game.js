@@ -10,8 +10,7 @@
 
   const root = document.getElementById('gameTab');
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const popcnt = (n) => (n & 1) + ((n >> 1) & 1) + ((n >> 2) & 1) + ((n >> 3) & 1);
-  const noteCount = (c) => c.steps.reduce((a, m) => a + popcnt(m), 0);
+  const noteCount = (c) => c.notes.length;
 
   let charts = {};
   let board = { global: [], charts: {} };
@@ -20,6 +19,7 @@
   let you = null;
   let selected = localStorage.getItem('gmChart') || 'demo';
   let speed = Number(localStorage.getItem('gmSpeed')) || 10;
+  let autoPlay = localStorage.getItem('gmAuto') === '1';
   let volume = Number(localStorage.getItem('gmVol') ?? 70);
   let awaitSave = false;
   let G = null; // текущая игра
@@ -44,7 +44,7 @@
     #gmCharts li.on { background: var(--panel); border-color: var(--moon); }
     #gmCharts li span, #gmCharts li em, .muted { color: var(--muted); font-size: 12px; font-style: normal; }
     .gm .row, #gmEditor .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-    .gm label.rng { display: grid; grid-template-columns: 90px 1fr 28px; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+    .gm label.rng { display: grid; grid-template-columns: 90px 1fr 70px; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
     .gm input[type=range] { accent-color: var(--moon); }
     .gm .num { float: right; color: var(--muted); font-size: 13px; }
     .gm li button { padding: 2px 8px; font-size: 12px; margin-left: 4px; }
@@ -57,7 +57,21 @@
     #gmOver .big { font-size: 26px; font-weight: 600; margin: 6px 0; }
     #gmOver .small { color: var(--muted); font-size: 13px; margin: 3px 0; }
     #gmOver .row { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
-    #gmEditor { padding: 14px; max-width: 720px; margin: 0 auto; }
+    #gmEditor { padding: 14px; max-width: 820px; margin: 0 auto; }
+    #gmEditor .tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+    #gmEditor select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+    #gmEditor label.inl { display: flex; align-items: center; gap: 6px; }
+    #edCv { width: 100%; height: 214px; display: block; background: #000; border: 1px solid var(--line); border-radius: 8px; touch-action: none; }
+    #edPads { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0; }
+    #edPads button { height: 68px; border: 0; border-radius: 14px; font-size: 22px; font-weight: 700; color: #000; touch-action: manipulation; }
+    .gm input[type=number] { width: 70px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; color: var(--text); }
+    #gmLock { opacity: .35; background: none; padding: 2px 8px; }
+    .gm label.sw { position: relative; display: inline-block; width: 44px; height: 24px; }
+    .gm label.sw input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
+    .gm label.sw span { position: absolute; inset: 0; border-radius: 12px; background: #333; transition: background .15s; }
+    .gm label.sw span::before { content: ''; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; border-radius: 50%; background: #fff; transition: transform .15s; }
+    .gm label.sw input:checked + span { background: var(--moon); }
+    .gm label.sw input:checked + span::before { transform: translateX(20px); background: #000; }
     #gmEditor .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
     #gmEditor label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     #gmEditor input[type=text], #gmEditor input[type=number], #gmEditor input[type=url] { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; color: var(--text); }
@@ -77,8 +91,12 @@
       <section>
         <h3>Треки <button id="gmNew">+ Создать</button></h3>
         <ul id="gmCharts"></ul>
-        <label class="rng">Скорость <input type="range" id="gmSpeed" min="1" max="20"><b id="gmSpeedV"></b></label>
+        <label class="rng">Скорость <input type="range" id="gmSpeed" min="1" max="100"><input type="number" id="gmSpeedN" min="0.1" max="1000" step="0.5"></label>
         <label class="rng">Громкость <input type="range" id="gmVol" min="0" max="100"><b id="gmVolV"></b></label>
+        <div class="row" style="margin-top:6px">
+          <button id="gmLock" aria-label="замок">🔒</button>
+          <label class="sw" id="gmSw" hidden><input type="checkbox" id="gmAuto" aria-label="переключатель"><span></span></label>
+        </div>
         <div class="row">
           <button class="run" id="gmPlay">Играть</button>
           <button id="gmEdit">Редактировать</button>
@@ -106,7 +124,14 @@
       <button class="x" id="gmExit">← Выйти</button>
       <div id="gmOver"></div>
     </div>
-    <div id="gmToast" hidden></div>`;
+    <div id="gmToast" hidden></div>
+    <dialog id="gmPw">
+      <form id="gmPwForm">
+        <label>Пароль<input type="password" id="gmPwIn" inputmode="numeric" autocomplete="off" maxlength="20"></label>
+        <div class="err" id="gmPwErr" role="alert"></div>
+        <div class="row"><button type="submit" class="run">OK</button><button type="button" id="gmPwNo">Отмена</button></div>
+      </form>
+    </dialog>`;
 
   const $ = (id) => document.getElementById(id);
   const cv = $('gmCv');
@@ -137,7 +162,8 @@
         ${top ? `<em>рекорд ${top.score} — ${esc(top.nick)}</em>` : ''}</li>`;
     }).join('') || '<li class="muted">Треков нет</li>';
 
-    $('gmSpeed').value = speed; $('gmSpeedV').textContent = speed;
+    $('gmSpeed').value = Math.min(100, speed);
+    if (document.activeElement !== $('gmSpeedN')) $('gmSpeedN').value = speed;
     $('gmVol').value = volume; $('gmVolV').textContent = volume;
 
     $('gmLobby').innerHTML = lobby.map((c) => {
@@ -179,10 +205,15 @@
     localStorage.setItem('gmChart', selected);
     renderMenu();
   });
-  $('gmSpeed').addEventListener('input', (e) => {
-    speed = Number(e.target.value);
+  const setSpeed = (v) => {
+    speed = Math.min(1000, Math.max(0.1, Number(v) || 10));
     localStorage.setItem('gmSpeed', speed);
-    $('gmSpeedV').textContent = speed;
+  };
+  $('gmSpeed').addEventListener('input', (e) => { setSpeed(e.target.value); $('gmSpeedN').value = speed; });
+  $('gmSpeedN').addEventListener('input', (e) => {
+    if (e.target.value === '') return;
+    setSpeed(e.target.value);
+    $('gmSpeed').value = Math.min(100, speed);
   });
   $('gmVol').addEventListener('input', (e) => {
     volume = Number(e.target.value);
@@ -190,6 +221,35 @@
     $('gmVolV').textContent = volume;
     audio.volume = volume / 100;
   });
+  const unlocked = () => localStorage.getItem('gmUnlock') === '1';
+  function renderLock() {
+    $('gmLock').hidden = unlocked();
+    $('gmSw').hidden = !unlocked();
+    $('gmAuto').checked = autoPlay && unlocked();
+  }
+  $('gmLock').addEventListener('click', () => {
+    $('gmPwIn').value = ''; $('gmPwErr').textContent = '';
+    $('gmPw').showModal();
+    $('gmPwIn').focus();
+  });
+  $('gmPwNo').addEventListener('click', () => $('gmPw').close());
+  $('gmPwForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if ($('gmPwIn').value.trim() === '6281') {
+      localStorage.setItem('gmUnlock', '1');
+      $('gmPw').close();
+      renderLock();
+    } else {
+      $('gmPwErr').textContent = 'Неверный пароль';
+      $('gmPwIn').value = '';
+    }
+  });
+  $('gmAuto').addEventListener('change', (e) => {
+    autoPlay = e.target.checked;
+    localStorage.setItem('gmAuto', autoPlay ? '1' : '0');
+  });
+  renderLock();
+
   $('gmPlay').addEventListener('click', () => {
     const c = charts[selected];
     if (!c) return toast('Выбери трек');
@@ -245,11 +305,9 @@
   // ---------- игра ----------
   let G_LAST = {};
   function buildLanes(chart) {
-    const step = 60000 / chart.bpm / 4;
     const lanes = [[], [], [], []];
-    chart.steps.forEach((mask, i) => {
-      for (let l = 0; l < 4; l++) if ((mask >> l) & 1) lanes[l].push({ t: chart.offset + i * step });
-    });
+    for (const [t, l] of chart.notes) lanes[l].push({ t });
+    for (const arr of lanes) arr.sort((a, b) => a.t - b.t);
     return lanes;
   }
 
@@ -262,6 +320,7 @@
       chart, mode, opp: opp || null, opps: { score: 0, acc: 0, combo: 0 }, lanes, ptr: [0, 0, 0, 0], total,
       score: 0, combo: 0, maxCombo: 0, wsum: 0, judged: 0, counts: { perfect: 0, great: 0, good: 0, miss: 0 },
       state: 'pre', preStart: performance.now(), startPerf: 0, t: -PRE_MS, endT: last + 1500,
+      auto: autoPlay && unlocked() && (mode === 'solo' || mode === 'test'),
       flash: [0, 0, 0, 0], fx: [], pop: null, speed, audioFailed: false, notice: '', lastProg: 0, result: null,
     };
     G_LAST = { mode, chart, opp: opp || null };
@@ -270,6 +329,7 @@
     $('gmStage').hidden = false;
     $('gmOver').innerHTML = '';
     audio.pause();
+    audio.defaultPlaybackRate = audio.playbackRate = 1;
     if (chart.url) {
       audio.src = chart.url;
       audio.volume = volume / 100;
@@ -290,7 +350,7 @@
     stopGame();
     $('gmStage').hidden = true;
     if (mode === 'test' && E) {
-      $('gmEditor').hidden = false;
+      edAfterTest();
     } else {
       $('gmMenu').hidden = false;
       renderMenu();
@@ -354,6 +414,12 @@
       if (G.audioFailed || now - G.waitStart > 3500) begin();
     } else if (G.state === 'play') {
       G.t = now - G.startPerf;
+      if (G.auto) {
+        for (let l = 0; l < 4; l++) {
+          const arr = G.lanes[l];
+          while (G.ptr[l] < arr.length && arr[G.ptr[l]].t <= G.t) { G.flash[l] = now; G.ptr[l]++; judge('perfect', l); }
+        }
+      }
       for (let l = 0; l < 4; l++) {
         const arr = G.lanes[l];
         while (G.ptr[l] < arr.length && G.t - arr[G.ptr[l]].t > WIN.good) {
@@ -381,7 +447,7 @@
     audio.pause();
     const acc = Math.round((G.wsum / (G.total * 300)) * 10000) / 100;
     G.result = { score: G.score, acc, maxCombo: G.maxCombo, counts: { ...G.counts }, rank: rankOf(acc) };
-    if (G.mode !== 'test' && Net.user()) Net.send({ type: 'score', chartId: G.chart.id, score: G.score, acc });
+    if (G.mode !== 'test' && !G.auto && Net.user()) Net.send({ type: 'score', chartId: G.chart.id, score: G.score, acc });
     if (G.mode === 'match') Net.send({ type: 'match_finish', score: G.score, acc, maxCombo: G.maxCombo });
     showResult();
   }
@@ -545,7 +611,7 @@
     if (G.notice) text(G.notice, W / 2, H - 40, 14, '#f2d98d');
   }
 
-  // ---------- редактор паттернов ----------
+  // ---------- редактор: таймлайн с музыкой и записью нажатий ----------
   const PRESETS = {
     'Лесенка': (a) => { for (let s = 0; s < 16; s += 2) a[s] = 1 << ((s / 2) % 4); },
     'Зигзаг': (a) => { [0, 1, 2, 3, 2, 1, 0, 1].forEach((l, i) => (a[i * 2] = 1 << l)); },
@@ -559,119 +625,405 @@
       }
     },
   };
+  const LANE_H = 44, RULER_H = 26, MAX_NOTES = 3000;
+
+  $('gmEditor').innerHTML = `
+    <h3>Редактор трека <button id="edClose">← Назад</button></h3>
+    <div class="grid2">
+      <label>Название<input type="text" id="edTitle" maxlength="40"></label>
+      <label>Ссылка на музыку (прямая, mp3/ogg/wav)<input type="url" id="edUrl" maxlength="500" placeholder="https://…/track.mp3"></label>
+      <label>BPM (для сетки)<input type="number" id="edBpm" min="20" max="400" step="0.01"></label>
+      <label>Первая доля, мс<input type="number" id="edOff" min="-5000" max="600000"></label>
+      <label>Скорость кружков (без лимита)<input type="number" id="edSpeed" min="0.1" max="1000" step="0.5"></label>
+      <label>Поправка нажатий, мс<input type="number" id="edLat" step="5" value="0"></label>
+    </div>
+    <div id="edStatus" class="muted"></div>
+    <div class="tools">
+      <button id="edPlay" class="run">▶ Играть</button>
+      <input type="range" id="edSeek" min="0" max="60000" value="0" style="flex:1;min-width:120px">
+      <span id="edTime" class="muted"></span>
+      <select id="edRate"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option></select>
+    </div>
+    <canvas id="edCv"></canvas>
+    <div id="edPads">${[0, 1, 2, 3].map((l) => `<button data-l="${l}" style="background:${COLORS[l]}">${'DFJK'[l]}</button>`).join('')}</div>
+    <p class="muted">Включи музыку и жми D F J K или цветные кнопки: ноты запишутся в такт. Касание дорожки на таймлайне ставит или убирает ноту,
+    перетаскивание двигает таймлайн, касание линейки перематывает. Пробел — пауза.</p>
+    <div class="tools">
+      <label class="inl">Сетка <select id="edSnap"><option value="0">Свободно</option><option value="1">1/1</option><option value="2">1/2</option><option value="4">1/4</option></select></label>
+      <button id="edQuant">Привязать к сетке</button>
+      <button id="edTap">Тап-темп</button>
+      <button id="edSetOff">Первая доля здесь</button>
+      <button id="edZoomOut">−</button><button id="edZoomIn">+</button>
+      <label class="inl"><input type="checkbox" id="edFollow" checked> Следить</label>
+      <button id="edUndo">Отменить</button>
+      <button id="edClear">Очистить</button>
+    </div>
+    <div class="tools">
+      <select id="edPreset">${Object.keys(PRESETS).map((k) => `<option>${esc(k)}</option>`).join('')}</select>
+      <button id="edInsert">Вставить паттерн на такт от курсора</button>
+    </div>
+    <div class="tools">
+      <button id="edTest">Тест</button>
+      <button class="run" id="edSave">Сохранить для всех</button>
+      <span id="edCount" class="muted"></span>
+    </div>
+    <p class="muted">Если ноты изменятся, рекорды трека сбросятся. Чужой трек сохраняется как твоя копия.</p>`;
+
+  const ecv = $('edCv'), ectx = ecv.getContext('2d');
+  let drag = null, edLoopId = 0, seeking = false, tapTimes = [], clickCtx = null;
+
+  const fmt = (ms, precise = true) => {
+    ms = Math.max(0, ms);
+    const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000), r = Math.floor(ms % 1000);
+    return `${m}:${String(s).padStart(2, '0')}${precise ? '.' + String(r).padStart(3, '0') : ''}`;
+  };
+  const setStatus = (t) => { $('edStatus').textContent = t; };
+  const updateCount = () => { $('edCount').textContent = `Нот: ${E ? E.notes.length : 0}`; };
 
   function openEditor(chart) {
-    E = chart
-      ? { id: chart.id, title: chart.title, url: chart.url, bpm: chart.bpm, offset: chart.offset, measures: chart.measures, speed: chart.speed, steps: chart.steps.slice(), m: 0 }
-      : { id: null, title: '', url: '', bpm: 120, offset: 0, measures: 8, speed: 10, steps: Array(8 * 16).fill(0), m: 0 };
-    // чужие треки и демо не перезаписываем — сохранится как твоя копия
-    if (chart && (chart.id === 'demo' || chart.author !== Net.user())) { E.id = null; E.fork = true; }
-    $('gmMenu').hidden = true;
-    $('gmEditor').hidden = false;
-    renderEditor();
+    const mine = chart && chart.id !== 'demo' && chart.author === Net.user();
+    E = {
+      id: mine ? chart.id : null, fork: !!chart && !mine,
+      title: chart ? chart.title : '', url: chart ? chart.url : '', bpm: chart ? chart.bpm : 120, offset: chart ? chart.offset : 0,
+      notes: chart ? chart.notes.map(([t, l]) => ({ t, l })) : [],
+      snap: 0, zoom: 240, vt: -400, undo: [], rate: 1, follow: true,
+      audio: 'none', dur: 60000, clock: { playing: false, base: 0, since: 0 },
+    };
+    $('edTitle').value = E.title; $('edUrl').value = E.url; $('edBpm').value = E.bpm; $('edOff').value = E.offset;
+    $('edSpeed').value = speed; $('edLat').value = Number(localStorage.getItem('gmLat')) || 0;
+    $('edSnap').value = '0'; $('edRate').value = '1'; $('edFollow').checked = true;
+    $('gmMenu').hidden = true; $('gmEditor').hidden = false;
+    edLoadAudio(); updateCount(); startEdLoop();
   }
 
   function editorChart() {
-    return { id: E.id || 'test', title: E.title || 'Тест', url: E.url, bpm: E.bpm, offset: E.offset, measures: E.measures, speed: E.speed, steps: E.steps, author: nick() };
+    readFields();
+    return {
+      id: E.id || 'test', title: E.title || 'Тест', url: E.url, bpm: E.bpm, offset: E.offset, speed,
+      notes: E.notes.map((n) => [n.t, n.l]), author: nick(),
+    };
   }
 
-  function resizeSteps() {
-    const len = E.measures * 16;
-    while (E.steps.length < len) E.steps.push(0);
-    E.steps.length = len;
-    if (E.m >= E.measures) E.m = E.measures - 1;
-  }
-
-  function renderEditor() {
-    const base = E.m * 16;
-    let lanes = '';
-    for (let l = 0; l < 4; l++) {
-      let cells = '';
-      for (let s = 0; s < 16; s++) {
-        const on = (E.steps[base + s] >> l) & 1;
-        cells += `<button class="cell ${on ? 'on' : ''}" data-l="${l}" data-s="${s}" style="${on ? 'background:' + COLORS[l] : ''}" aria-label="дорожка ${l + 1}, шаг ${s + 1}"></button>`;
-      }
-      lanes += `<div class="lane">${cells}</div>`;
-    }
-    $('gmEditor').innerHTML = `
-      <h3>${E.id ? 'Редактирование трека' : E.fork ? 'Копия трека (автором станешь ты)' : 'Новый трек'} <button id="edClose">← Назад</button></h3>
-      <div class="grid2">
-        <label>Название<input type="text" id="edTitle" maxlength="40" value="${esc(E.title)}"></label>
-        <label>Ссылка на музыку (прямая, mp3/ogg/wav)<input type="url" id="edUrl" maxlength="500" placeholder="https://…/track.mp3" value="${esc(E.url)}"></label>
-        <label>BPM<input type="number" id="edBpm" min="40" max="300" step="0.01" value="${E.bpm}"></label>
-        <label>Сдвиг первой доли, мс<input type="number" id="edOff" min="-5000" max="600000" value="${E.offset}"></label>
-        <label>Тактов (1–32)<input type="number" id="edMeas" min="1" max="32" value="${E.measures}"></label>
-        <label>Скорость по умолчанию<input type="number" id="edSpeed" min="1" max="20" value="${E.speed}"></label>
-      </div>
-      <div class="pager">
-        <button id="edPrev">◀</button><b>Такт ${E.m + 1} / ${E.measures}</b><button id="edNext">▶</button>
-        <span class="muted">16 шагов в такте</span>
-      </div>
-      <div class="pat">${lanes}</div>
-      <div class="row" style="margin-top:6px">
-        ${Object.keys(PRESETS).map((k) => `<button data-p="${esc(k)}">${esc(k)}</button>`).join('')}
-        <button id="edClear">Очистить такт</button>
-        <button id="edCopy">Скопировать в следующий</button>
-      </div>
-      <div class="row">
-        <button id="edTest">Тест</button>
-        <button class="run" id="edSave">Сохранить для всех</button>
-      </div>
-      <p class="muted">Совет: сдвиг — это время (мс) от начала музыки до первой доли. Подбирай его кнопкой «Тест».
-      Если паттерн или BPM изменятся, рекорды этого трека сбросятся.</p>`;
-  }
-
-  function syncFields() {
-    if (!$('edTitle')) return;
+  function readFields() {
     E.title = $('edTitle').value;
     E.url = $('edUrl').value.trim();
-    E.bpm = Number($('edBpm').value) || 120;
+    E.bpm = Math.min(400, Math.max(20, Number($('edBpm').value) || 120));
     E.offset = Math.round(Number($('edOff').value) || 0);
-    E.speed = Math.min(20, Math.max(1, Math.round(Number($('edSpeed').value) || 10)));
-    const m = Math.min(32, Math.max(1, Math.round(Number($('edMeas').value) || 1)));
-    if (m !== E.measures) { E.measures = m; resizeSteps(); }
   }
 
-  $('gmEditor').addEventListener('click', (e) => {
-    const t = e.target;
-    const cell = t.closest('.cell');
-    if (cell) {
-      syncFields();
-      E.steps[E.m * 16 + Number(cell.dataset.s)] ^= 1 << Number(cell.dataset.l);
-      return renderEditor();
+  // ----- музыка и часы -----
+  const edAudioOn = () => E.audio === 'ready';
+  function edTime() {
+    if (edAudioOn()) return audio.currentTime * 1000;
+    return E.clock.playing ? E.clock.base + (performance.now() - E.clock.since) * E.rate : E.clock.base;
+  }
+  const edPlaying = () => (edAudioOn() ? !audio.paused : E.clock.playing);
+  const edDur = () => (E.audio === 'ready' ? E.dur : Math.max(60000, (E.notes.length ? E.notes[E.notes.length - 1].t : 0) + 10000));
+
+  function edPlay() {
+    if (E.audio === 'loading') return toast('Музыка ещё загружается…');
+    if (edAudioOn()) {
+      audio.volume = volume / 100;
+      audio.play().catch(() => toast('Браузер заблокировал воспроизведение — нажми ещё раз'));
+    } else {
+      E.clock.since = performance.now();
+      E.clock.playing = true;
     }
-    const btn = t.closest('button');
-    if (!btn) return;
-    syncFields();
-    const base = E.m * 16;
-    if (btn.id === 'edClose') { $('gmEditor').hidden = true; $('gmMenu').hidden = false; E = null; return renderMenu(); }
-    if (btn.id === 'edPrev') { E.m = Math.max(0, E.m - 1); return renderEditor(); }
-    if (btn.id === 'edNext') { E.m = Math.min(E.measures - 1, E.m + 1); return renderEditor(); }
-    if (btn.id === 'edClear') { for (let s = 0; s < 16; s++) E.steps[base + s] = 0; return renderEditor(); }
-    if (btn.id === 'edCopy') {
-      if (E.m + 1 < E.measures) for (let s = 0; s < 16; s++) E.steps[base + 16 + s] = E.steps[base + s];
-      E.m = Math.min(E.measures - 1, E.m + 1);
-      return renderEditor();
+  }
+  function edPause() {
+    if (!E) return;
+    if (edAudioOn()) audio.pause();
+    else if (E.clock.playing) { E.clock.base = edTime(); E.clock.playing = false; }
+  }
+  function edSeek(ms) {
+    ms = Math.max(0, Math.min(edDur(), ms));
+    if (edAudioOn()) audio.currentTime = ms / 1000;
+    else { E.clock.base = ms; E.clock.since = performance.now(); }
+  }
+
+  function edLoadAudio() {
+    edPause();
+    E.clock.base = 0;
+    if (!E.url) {
+      E.audio = 'none';
+      audio.pause();
+      setStatus('Без музыки: работает виртуальный таймер. Вставь ссылку на трек, чтобы слушать его в редакторе.');
+      return;
     }
-    if (btn.dataset.p) {
-      const a = Array(16).fill(0);
-      PRESETS[btn.dataset.p](a);
-      for (let s = 0; s < 16; s++) E.steps[base + s] = a[s];
-      return renderEditor();
+    E.audio = 'loading';
+    setStatus('Загружаю музыку…');
+    audio.src = E.url;
+    audio.defaultPlaybackRate = audio.playbackRate = E.rate;
+    audio.volume = volume / 100;
+    audio.load();
+  }
+  audio.addEventListener('loadedmetadata', () => {
+    if (!E || G) return;
+    E.audio = 'ready';
+    E.dur = isFinite(audio.duration) ? audio.duration * 1000 : 600000;
+    setStatus('Музыка загружена, длительность ' + fmt(E.dur, false));
+  });
+  audio.addEventListener('error', () => {
+    if (!E || G || !E.url) return;
+    E.audio = 'error';
+    setStatus('Не удалось загрузить музыку: нужна прямая ссылка на аудиофайл. Пока работает виртуальный таймер.');
+  });
+
+  // ----- ноты -----
+  function snapT(t) {
+    if (E.snap > 0 && E.bpm > 0) {
+      const step = 60000 / E.bpm / E.snap;
+      t = E.offset + Math.round((t - E.offset) / step) * step;
     }
-    if (btn.id === 'edTest') {
-      if (!E.steps.some(Boolean)) return toast('Добавь хотя бы одну ноту');
-      prime(editorChart());
-      return startGame(editorChart(), 'test');
+    return Math.max(0, Math.round(t));
+  }
+  function pushUndo() {
+    E.undo.push(JSON.stringify(E.notes));
+    if (E.undo.length > 60) E.undo.shift();
+  }
+  function addNote(t, l, noUndo) {
+    t = snapT(t);
+    if (E.notes.some((n) => n.l === l && Math.abs(n.t - t) < 20)) return false;
+    if (E.notes.length >= MAX_NOTES) { toast(`Максимум ${MAX_NOTES} нот`); return false; }
+    if (!noUndo) pushUndo();
+    E.notes.push({ t, l });
+    E.notes.sort((a, b) => a.t - b.t || a.l - b.l);
+    return true;
+  }
+  function removeNear(l, t, tol) {
+    let best = -1, bd = tol + 1;
+    E.notes.forEach((n, i) => {
+      const d = Math.abs(n.t - t);
+      if (n.l === l && d < bd) { bd = d; best = i; }
+    });
+    if (best < 0) return false;
+    pushUndo();
+    E.notes.splice(best, 1);
+    return true;
+  }
+  function click() {
+    try {
+      clickCtx = clickCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = clickCtx.createOscillator(), g = clickCtx.createGain(), t = clickCtx.currentTime;
+      o.frequency.value = 1400;
+      g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+      o.connect(g); g.connect(clickCtx.destination); o.start(t); o.stop(t + 0.05);
+    } catch { /* звук необязателен */ }
+  }
+  function padHit(l) { // нажатие: нота ставится в текущий момент музыки
+    const t = edTime() - (Number($('edLat').value) || 0);
+    if (addNote(t, l)) {
+      if (!edPlaying()) click();
+      updateCount();
     }
-    if (btn.id === 'edSave') {
-      if (!Net.user()) { toast('Войди в аккаунт, чтобы сохранять треки'); return Net.openAuth('login'); }
-      if (!E.title.trim()) return toast('Введи название');
-      if (!E.steps.some(Boolean)) return toast('Добавь хотя бы одну ноту');
-      awaitSave = true;
-      Net.send({ type: 'chart_save', nick: nick(), chart: { id: E.id, title: E.title, url: E.url, bpm: E.bpm, offset: E.offset, measures: E.measures, speed: E.speed, steps: E.steps } });
+  }
+
+  // ----- таймлайн -----
+  function zoomBy(f) {
+    const W = ecv.clientWidth, c = E.vt + (W / 2) * 1000 / E.zoom;
+    E.zoom = Math.min(5000, Math.max(30, E.zoom * f));
+    E.vt = c - (W / 2) * 1000 / E.zoom;
+  }
+
+  function drawEditor() {
+    const W = ecv.clientWidth, H = ecv.clientHeight, d = window.devicePixelRatio || 1;
+    if (ecv.width !== Math.round(W * d) || ecv.height !== Math.round(H * d)) { ecv.width = Math.round(W * d); ecv.height = Math.round(H * d); }
+    ectx.setTransform(d, 0, 0, d, 0, 0);
+    const cur = edTime(), dur = edDur();
+    if (E.follow && edPlaying() && !(drag && drag.moved)) E.vt = cur - W * 0.3 * 1000 / E.zoom;
+    const px = (t) => (t - E.vt) * E.zoom / 1000;
+    const tl = E.vt, tr = E.vt + W * 1000 / E.zoom;
+    ectx.fillStyle = '#000'; ectx.fillRect(0, 0, W, H);
+    for (let l = 0; l < 4; l++) {
+      const y0 = RULER_H + l * LANE_H;
+      ectx.fillStyle = l % 2 ? 'rgba(255,255,255,.03)' : 'rgba(255,255,255,.06)';
+      ectx.fillRect(0, y0, W, LANE_H);
+      ectx.fillStyle = COLORS[l]; ectx.globalAlpha = 0.18; ectx.fillRect(0, y0 + LANE_H / 2 - 0.5, W, 1); ectx.globalAlpha = 1;
+    }
+    // сетка по BPM
+    if (E.bpm > 0) {
+      const div = E.snap > 0 ? E.snap : 1, step = 60000 / E.bpm / div;
+      if (step * E.zoom / 1000 >= 6) {
+        let k = Math.ceil((tl - E.offset) / step);
+        for (let t = E.offset + k * step; t <= tr; t = E.offset + ++k * step) {
+          ectx.fillStyle = k % div === 0 ? 'rgba(255,255,255,.2)' : 'rgba(255,255,255,.08)';
+          ectx.fillRect(px(t), RULER_H, 1, LANE_H * 4);
+        }
+      }
+    }
+    // линейка
+    const steps = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000];
+    const sm = steps.find((s) => s * E.zoom / 1000 >= 90) || 60000;
+    ectx.fillStyle = 'rgba(255,255,255,.55)'; ectx.font = '11px system-ui'; ectx.textAlign = 'left';
+    for (let t = Math.ceil(Math.max(0, tl) / sm) * sm; t <= tr; t += sm) {
+      ectx.fillRect(px(t), RULER_H - 8, 1, 8);
+      ectx.fillText(fmt(t, sm < 1000), px(t) + 3, 12);
+    }
+    // ноты
+    for (const n of E.notes) {
+      const x = px(n.t);
+      if (x < -14 || x > W + 14) continue;
+      ectx.fillStyle = COLORS[n.l];
+      ectx.beginPath(); ectx.arc(x, RULER_H + n.l * LANE_H + LANE_H / 2, 12, 0, Math.PI * 2); ectx.fill();
+    }
+    ectx.fillStyle = 'rgba(255,255,255,.4)'; ectx.font = '600 12px system-ui';
+    for (let l = 0; l < 4; l++) ectx.fillText('DFJK'[l], 6, RULER_H + l * LANE_H + LANE_H / 2 + 4);
+    // курсор воспроизведения
+    const cx = px(cur);
+    ectx.fillStyle = '#fff'; ectx.fillRect(cx - 0.75, 0, 1.5, H);
+    ectx.beginPath(); ectx.moveTo(cx - 6, 0); ectx.lineTo(cx + 6, 0); ectx.lineTo(cx, 9); ectx.fill();
+
+    $('edTime').textContent = `${fmt(cur)} / ${fmt(dur, false)}`;
+    const sk = $('edSeek');
+    if (Number(sk.max) !== Math.round(dur)) sk.max = Math.round(dur);
+    if (!seeking) sk.value = Math.round(cur);
+    const pl = $('edPlay'), txt = edPlaying() ? '⏸ Пауза' : '▶ Играть';
+    if (pl.textContent !== txt) pl.textContent = txt;
+  }
+
+  function startEdLoop() {
+    const id = ++edLoopId;
+    const f = () => {
+      if (id !== edLoopId || !E || $('gmEditor').hidden || G) return;
+      drawEditor();
+      requestAnimationFrame(f);
+    };
+    requestAnimationFrame(f);
+  }
+
+  ecv.addEventListener('pointerdown', (e) => {
+    if (!E) return;
+    ecv.setPointerCapture(e.pointerId);
+    drag = { x: e.clientX, vt: E.vt, moved: false };
+  });
+  ecv.addEventListener('pointermove', (e) => {
+    if (!drag || !E) return;
+    const dx = e.clientX - drag.x;
+    if (Math.abs(dx) > 6) drag.moved = true;
+    if (drag.moved) E.vt = drag.vt - dx * 1000 / E.zoom;
+  });
+  ecv.addEventListener('pointerup', (e) => {
+    if (!drag || !E) return;
+    const dr = drag; drag = null;
+    if (dr.moved) return;
+    const r = ecv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const t = E.vt + x * 1000 / E.zoom;
+    if (y < RULER_H) return edSeek(t);
+    const l = Math.floor((y - RULER_H) / LANE_H);
+    if (l < 0 || l > 3) return;
+    if (!removeNear(l, t, 14 * 1000 / E.zoom)) addNote(t, l);
+    updateCount();
+  });
+  ecv.addEventListener('pointercancel', () => { drag = null; });
+  ecv.addEventListener('wheel', (e) => {
+    if (!E) return;
+    e.preventDefault();
+    if (e.ctrlKey) zoomBy(e.deltaY < 0 ? 1.2 : 1 / 1.2);
+    else E.vt += (e.deltaY + e.deltaX) * 1000 / E.zoom;
+  }, { passive: false });
+
+  $('edPads').addEventListener('pointerdown', (e) => {
+    const b = e.target.closest('button[data-l]');
+    if (!b || !E) return;
+    e.preventDefault();
+    padHit(Number(b.dataset.l));
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (G || !E || $('gmEditor').hidden) return;
+    const tag = e.target.tagName, type = e.target.type;
+    if (tag === 'SELECT' || tag === 'TEXTAREA' || (tag === 'INPUT' && !['range', 'checkbox'].includes(type))) return;
+    if (e.code === 'Space' && tag !== 'BUTTON') { e.preventDefault(); edPlaying() ? edPause() : edPlay(); }
+    else if (!e.repeat && e.code in KEYS) { e.preventDefault(); padHit(KEYS[e.code]); }
+    else if (e.ctrlKey && e.code === 'KeyZ') { e.preventDefault(); $('edUndo').click(); }
+  });
+
+  // ----- кнопки и поля -----
+  function setSpeedValue(v) {
+    speed = Math.min(1000, Math.max(0.1, Number(v) || 10));
+    localStorage.setItem('gmSpeed', speed);
+  }
+
+  $('gmEditor').addEventListener('change', (e) => {
+    if (!E) return;
+    const id = e.target.id;
+    if (id === 'edUrl') { E.url = e.target.value.trim(); edLoadAudio(); }
+    else if (id === 'edBpm' || id === 'edOff' || id === 'edTitle') readFields();
+    else if (id === 'edSnap') E.snap = Number(e.target.value);
+    else if (id === 'edFollow') E.follow = e.target.checked;
+    else if (id === 'edSpeed') setSpeedValue(e.target.value);
+    else if (id === 'edLat') localStorage.setItem('gmLat', Number(e.target.value) || 0);
+    else if (id === 'edRate') {
+      if (!edAudioOn() && E.clock.playing) { E.clock.base = edTime(); E.clock.since = performance.now(); }
+      E.rate = Number(e.target.value);
+      audio.defaultPlaybackRate = audio.playbackRate = E.rate;
     }
   });
+  $('edSeek').addEventListener('pointerdown', () => { seeking = true; });
+  $('edSeek').addEventListener('pointerup', () => { seeking = false; });
+  $('edSeek').addEventListener('input', (e) => { if (E) edSeek(Number(e.target.value)); });
+
+  $('gmEditor').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn || !E || btn.closest('#edPads')) return;
+    const id = btn.id;
+    if (id === 'edClose') { edPause(); $('gmEditor').hidden = true; $('gmMenu').hidden = false; E = null; renderMenu(); }
+    else if (id === 'edPlay') { edPlaying() ? edPause() : edPlay(); }
+    else if (id === 'edZoomIn') zoomBy(1.5);
+    else if (id === 'edZoomOut') zoomBy(1 / 1.5);
+    else if (id === 'edUndo') { if (E.undo.length) { E.notes = JSON.parse(E.undo.pop()); updateCount(); } }
+    else if (id === 'edClear') { if (E.notes.length && confirm('Удалить все ноты?')) { pushUndo(); E.notes = []; updateCount(); } }
+    else if (id === 'edSetOff') { E.offset = Math.round(edTime()); $('edOff').value = E.offset; toast('Первая доля: ' + E.offset + ' мс'); }
+    else if (id === 'edTap') {
+      const now = performance.now();
+      if (tapTimes.length && now - tapTimes[tapTimes.length - 1] > 2000) tapTimes = [];
+      tapTimes.push(now);
+      if (tapTimes.length >= 3) {
+        const avg = (tapTimes[tapTimes.length - 1] - tapTimes[0]) / (tapTimes.length - 1);
+        E.bpm = Math.round((60000 / avg) * 100) / 100;
+        $('edBpm').value = E.bpm;
+      }
+      toast(tapTimes.length < 3 ? `Тап ${tapTimes.length}… (нужно минимум 3)` : `BPM: ${E.bpm}`);
+    } else if (id === 'edQuant') {
+      readFields();
+      if (E.snap === 0) return toast('Выбери сетку: 1/1, 1/2 или 1/4');
+      pushUndo();
+      const seen = new Set();
+      E.notes = E.notes.map((n) => ({ t: snapT(n.t), l: n.l })).filter((n) => { const k = n.t * 4 + n.l; if (seen.has(k)) return false; seen.add(k); return true; });
+      E.notes.sort((a, b) => a.t - b.t || a.l - b.l);
+      updateCount();
+    } else if (id === 'edInsert') {
+      readFields();
+      const step = 60000 / E.bpm / 4, t0 = E.offset + Math.round((edTime() - E.offset) / step) * step;
+      const mask = Array(16).fill(0);
+      PRESETS[$('edPreset').value](mask);
+      pushUndo();
+      const saved = E.snap; E.snap = 0;
+      mask.forEach((m, s) => { for (let l = 0; l < 4; l++) if ((m >> l) & 1) addNote(t0 + s * step, l, true); });
+      E.snap = saved;
+      updateCount();
+    } else if (id === 'edTest') {
+      if (!E.notes.length) return toast('Добавь хотя бы одну ноту');
+      edPause();
+      const c = editorChart();
+      prime(c);
+      startGame(c, 'test');
+    } else if (id === 'edSave') {
+      readFields();
+      if (!Net.user()) { toast('Войди в аккаунт, чтобы сохранять треки'); return Net.openAuth('login'); }
+      if (!E.title.trim()) return toast('Введи название');
+      if (!E.notes.length) return toast('Добавь хотя бы одну ноту');
+      awaitSave = true;
+      Net.send({ type: 'chart_save', nick: nick(), chart: { id: E.id, title: E.title, url: E.url, bpm: E.bpm, offset: E.offset, speed, notes: E.notes.map((n) => [n.t, n.l]) } });
+    }
+  });
+
+  // возврат из тестовой игры в редактор
+  function edAfterTest() {
+    $('gmEditor').hidden = false;
+    audio.defaultPlaybackRate = audio.playbackRate = E.rate;
+    startEdLoop();
+  }
 
   // ---------- сообщения от сервера ----------
   function onMessage(m) {
@@ -734,6 +1086,6 @@
 
   window.Game = {
     onMessage,
-    onHide() { if (G) exitGame(); },
+    onHide() { if (E) edPause(); if (G) exitGame(); },
   };
 })();

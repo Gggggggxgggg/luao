@@ -71,13 +71,32 @@ function scheduleSave() {
 
 // ---------- игра: треки, рекорды, вызовы, матчи ----------
 const MAX_CHARTS = 50;
-const MAX_MEASURES = 32;
+const MAX_NOTES = 3000;
+const MAX_TIME = 3600000; // мс (1 час)
 const MAX_TITLE = 40;
 const MAX_URL = 500;
-const popcnt = (n) => (n & 1) + ((n >> 1) & 1) + ((n >> 2) & 1) + ((n >> 3) & 1);
-const noteCount = (c) => c.steps.reduce((a, m) => a + popcnt(m), 0);
+const noteCount = (c) => c.notes.length;
 const rid = () => crypto.randomBytes(4).toString('hex');
 const clamp = (v, a, b) => Math.min(b, Math.max(a, Number(v) || 0));
+
+function stepsToNotes(steps, bpm, offset) {
+  const step = 60000 / bpm / 4;
+  const notes = [];
+  steps.forEach((mask, i) => {
+    for (let l = 0; l < 4; l++) if ((mask >> l) & 1) notes.push([Math.round(offset + i * step), l]);
+  });
+  return notes;
+}
+
+// старые треки хранили сетку шагов; переводим в ноты со временем в мс
+function normalizeChart(c) {
+  if (!Array.isArray(c.notes) && Array.isArray(c.steps)) {
+    c.notes = stepsToNotes(c.steps, c.bpm || 120, c.offset || 0);
+  }
+  delete c.steps;
+  delete c.measures;
+  return c;
+}
 
 function demoChart() {
   const steps = [];
@@ -86,7 +105,7 @@ function demoChart() {
   }
   return {
     id: 'demo', title: 'Демо (без музыки)', author: 'система', url: '', bpm: 120,
-    offset: 1000, measures: 8, speed: 10, steps, ts: 0,
+    offset: 1000, speed: 10, notes: stepsToNotes(steps, 120, 1000), ts: 0,
   };
 }
 
@@ -96,19 +115,27 @@ function validateChart(c) {
   const url = cleanText(c.url, MAX_URL).trim();
   const bpm = Number(c.bpm);
   const offset = Math.round(Number(c.offset));
-  const measures = Math.round(Number(c.measures));
   if (!title) return null;
   if (url && !/^https?:\/\/\S+$/i.test(url)) return null;
-  if (!(bpm >= 40 && bpm <= 300)) return null;
+  if (!(bpm >= 20 && bpm <= 400)) return null;
   if (!(offset >= -5000 && offset <= 600000)) return null;
-  if (!(measures >= 1 && measures <= MAX_MEASURES)) return null;
-  if (!Array.isArray(c.steps) || c.steps.length !== measures * 16) return null;
-  if (!c.steps.every((x) => Number.isInteger(x))) return null;
-  const steps = c.steps.map((x) => x & 15);
-  if (!steps.some(Boolean)) return null;
+  if (!Array.isArray(c.notes) || c.notes.length < 1 || c.notes.length > MAX_NOTES) return null;
+  const seen = new Set();
+  const notes = [];
+  for (const n of c.notes) {
+    if (!Array.isArray(n) || n.length !== 2) return null;
+    const t = Math.round(Number(n[0]));
+    const l = Number(n[1]);
+    if (!(t >= 0 && t <= MAX_TIME) || !Number.isInteger(l) || l < 0 || l > 3) return null;
+    const k = t * 4 + l;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    notes.push([t, l]);
+  }
+  notes.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   return {
-    title, url, bpm: Math.round(bpm * 100) / 100, offset, measures,
-    speed: Math.round(clamp(c.speed || 10, 1, 20)), steps,
+    title, url, bpm: Math.round(bpm * 100) / 100, offset,
+    speed: Math.round(clamp(c.speed || 10, 0.1, 1000) * 100) / 100, notes,
   };
 }
 
@@ -223,7 +250,7 @@ function handleGame(ws, m, now) {
       if (typeof id === 'string' && Object.hasOwn(state.charts, id) && id !== 'demo') {
         const old = state.charts[id];
         if (old.author !== ws.user) return sendTo(ws, { type: 'error', text: 'Править трек может только автор' }), true;
-        changed = JSON.stringify([old.steps, old.bpm, old.offset]) !== JSON.stringify([v.steps, v.bpm, v.offset]);
+        changed = JSON.stringify(old.notes) !== JSON.stringify(v.notes);
         chart = { ...old, ...v };
         if (changed) delete state.scores[id];
       } else {
@@ -772,7 +799,8 @@ function handleChess(ws, m) {
   }
 }
 
-if (!Object.keys(state.charts).length) state.charts.demo = demoChart();
+for (const c of Object.values(state.charts)) normalizeChart(c);
+state.charts.demo = demoChart();
 
 // ---------- аккаунты ----------
 const USER_RE = /^[\p{L}\p{N}_-]{3,20}$/u;
